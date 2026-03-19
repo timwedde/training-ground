@@ -1,12 +1,14 @@
-from __future__ import annotations
-
 import asyncio
 import concurrent.futures
 import hashlib
+import importlib
 import json
 import os
+import shutil
+import subprocess
 import time
 import zipfile
+from collections import deque
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,21 +24,28 @@ from textual.containers import Center, Horizontal, Middle, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
+    Button,
+    Checkbox,
     Header,
     Input,
     Label,
     LoadingIndicator,
     OptionList,
     ProgressBar,
+    RichLog,
+    Sparkline,
     Static,
 )
 
 AUTH_URL: Final = "https://app.roboflow.com/auth-cli"
 DOWNLOAD_ROOT: Final = Path.cwd() / "datasets"
 WEIGHTS_ROOT: Final = Path.cwd() / "weights"
+TRAINING_ROOT: Final = Path.cwd() / "training_runs"
 AUTH_KEY: Final = "A"
 DATASET_FORMAT: Final = "coco"
 DATASET_FORMAT_LABEL: Final = "COCO Segmentation"
+TRAINING_LOG_LINES: Final = 1000
+GPU_HISTORY_LENGTH: Final = 90
 
 
 @dataclass(slots=True)
@@ -74,15 +83,47 @@ class VersionChoice:
 class ModelChoice:
     label: str
     size_key: str
+    class_name: str
+    default_resolution: int
     filename: str
     url: str
     md5_hash: str
+
+
+@dataclass(slots=True)
+class TrainingConfigChoice:
+    image_size: int
+    epochs: int
+    batch_size: int
+    num_workers: int
+    output_dir: str
+    early_stopping: bool
+    early_stopping_patience: int
+    early_stopping_min_delta: float
+    early_stopping_use_ema: bool
+
+
+@dataclass(slots=True)
+class GpuSnapshot:
+    index: int
+    name: str
+    utilization: float
+    memory_used_mb: float
+    memory_total_mb: float
+
+    @property
+    def memory_percent(self) -> float:
+        if self.memory_total_mb <= 0:
+            return 0.0
+        return (self.memory_used_mb / self.memory_total_mb) * 100.0
 
 
 MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
     ModelChoice(
         "Nano",
         "rfdetr-seg-nano",
+        "RFDETRSegNano",
+        312,
         "rf-detr-seg-nano.pt",
         "https://storage.googleapis.com/rfdetr/rf-detr-seg-n-ft.pth",
         "9995497791d0ff1664a1d9ddee9cfd20",
@@ -90,6 +131,8 @@ MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
     ModelChoice(
         "Small",
         "rfdetr-seg-small",
+        "RFDETRSegSmall",
+        384,
         "rf-detr-seg-small.pt",
         "https://storage.googleapis.com/rfdetr/rf-detr-seg-s-ft.pth",
         "0a2a3006381d0c42853907e700eadd08",
@@ -97,6 +140,8 @@ MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
     ModelChoice(
         "Medium",
         "rfdetr-seg-medium",
+        "RFDETRSegMedium",
+        432,
         "rf-detr-seg-medium.pt",
         "https://storage.googleapis.com/rfdetr/rf-detr-seg-m-ft.pth",
         "a49af1562c3719227ad43d0ca53b4c7a",
@@ -104,6 +149,8 @@ MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
     ModelChoice(
         "Large",
         "rfdetr-seg-large",
+        "RFDETRSegLarge",
+        504,
         "rf-detr-seg-large.pt",
         "https://storage.googleapis.com/rfdetr/rf-detr-seg-l-ft.pth",
         "275f7b094909544ed2841c94a677d07e",
@@ -111,6 +158,8 @@ MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
     ModelChoice(
         "XLarge",
         "rfdetr-seg-xlarge",
+        "RFDETRSegXLarge",
+        624,
         "rf-detr-seg-xlarge.pt",
         "https://storage.googleapis.com/rfdetr/rf-detr-seg-xl-ft.pth",
         "3693b35d0eea86ebb3e0444f4a611fba",
@@ -118,6 +167,8 @@ MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
     ModelChoice(
         "2XLarge",
         "rfdetr-seg-2xlarge",
+        "RFDETRSeg2XLarge",
+        768,
         "rf-detr-seg-xxlarge.pt",
         "https://storage.googleapis.com/rfdetr/rf-detr-seg-2xl-ft.pth",
         "040bc3412af840fa8a47e0ff69b552ba",
@@ -327,6 +378,96 @@ def compute_md5(filepath: Path) -> str:
     return digest.hexdigest()
 
 
+class TrainingLogStream:
+    def __init__(self, file_handle, callback=None) -> None:
+        self.file_handle = file_handle
+        self.callback = callback
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+
+        self.file_handle.write(text)
+        self.file_handle.flush()
+        self._buffer += text.replace("\r", "\n")
+
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            report_progress(self.callback, "log", line.rstrip(), 0, None)
+
+        return len(text)
+
+    def flush(self) -> None:
+        self.file_handle.flush()
+        if self._buffer:
+            report_progress(self.callback, "log", self._buffer.rstrip(), 0, None)
+            self._buffer = ""
+
+
+def query_gpu_snapshots() -> list[GpuSnapshot]:
+    command = shutil.which("nvidia-smi")
+    if command is None:
+        return []
+
+    try:
+        result = subprocess.run(
+            [
+                command,
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return []
+    if result.returncode != 0:
+        return []
+
+    snapshots: list[GpuSnapshot] = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 5:
+            continue
+        try:
+            snapshots.append(
+                GpuSnapshot(
+                    index=int(parts[0]),
+                    name=parts[1],
+                    utilization=float(parts[2]),
+                    memory_used_mb=float(parts[3]),
+                    memory_total_mb=float(parts[4]),
+                )
+            )
+        except ValueError:
+            continue
+
+    return snapshots
+
+
+def default_training_config(
+    project: ProjectChoice,
+    version: VersionChoice,
+    model: ModelChoice,
+) -> TrainingConfigChoice:
+    run_name = f"{project.slug}-v{version.number}-{model.size_key}"
+    output_dir = TRAINING_ROOT / run_name
+    return TrainingConfigChoice(
+        image_size=model.default_resolution,
+        epochs=50,
+        batch_size=4,
+        num_workers=2,
+        output_dir=str(output_dir),
+        early_stopping=True,
+        early_stopping_patience=10,
+        early_stopping_min_delta=0.001,
+        early_stopping_use_ema=False,
+    )
+
+
 def download_dataset(
     project_slug: str,
     version_number: int,
@@ -433,10 +574,7 @@ def download_model_weights(model: ModelChoice, callback=None) -> Path:
     target = WEIGHTS_ROOT / model.filename
     temp_target = WEIGHTS_ROOT / f"{model.filename}.tmp"
 
-    if (
-        target.exists()
-        and compute_md5(target).lower() == model.md5_hash.lower()
-    ):
+    if target.exists() and compute_md5(target).lower() == model.md5_hash.lower():
         report_progress(
             callback,
             "complete",
@@ -482,6 +620,65 @@ def download_model_weights(model: ModelChoice, callback=None) -> Path:
         callback, "complete", f"Pretrained weights downloaded to {target}", 1, 1
     )
     return target
+
+
+def run_training(
+    model: ModelChoice,
+    dataset_path: Path,
+    weights_path: Path,
+    config: TrainingConfigChoice,
+    callback=None,
+) -> Path:
+    report_progress(
+        callback,
+        "training",
+        f"Loading RF-DETR training stack for {model.label}...",
+        0,
+        1,
+    )
+    output_dir = Path(config.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / "training.log"
+
+    report_progress(
+        callback,
+        "training",
+        f"Starting training for {model.label}...",
+        0,
+        1,
+    )
+    os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+    with log_path.open("a", encoding="utf-8") as log_handle:
+        log_stream = TrainingLogStream(log_handle, callback)
+        with redirect_stdout(log_stream), redirect_stderr(log_stream):
+            detr_module = importlib.import_module("rfdetr.detr")
+            model_class = getattr(detr_module, model.class_name)
+            trainer = model_class(
+                pretrain_weights=str(weights_path),
+                resolution=config.image_size,
+            )
+            trainer.train(
+                dataset_dir=str(dataset_path),
+                output_dir=str(output_dir),
+                dataset_file="roboflow",
+                epochs=config.epochs,
+                batch_size=config.batch_size,
+                num_workers=config.num_workers,
+                early_stopping=config.early_stopping,
+                early_stopping_patience=config.early_stopping_patience,
+                early_stopping_min_delta=config.early_stopping_min_delta,
+                early_stopping_use_ema=config.early_stopping_use_ema,
+                progress_bar=False,
+            )
+        log_stream.flush()
+    report_progress(
+        callback,
+        "complete",
+        f"Training completed. Outputs written to {output_dir}",
+        1,
+        1,
+    )
+    return output_dir
 
 
 class AuthScreen(ModalScreen[RoboflowSession | None]):
@@ -611,9 +808,223 @@ class AuthScreen(ModalScreen[RoboflowSession | None]):
             status.styles.color = "white"
 
 
+class TrainingConfigScreen(ModalScreen[TrainingConfigChoice | None]):
+    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+c", "app.quit", "Quit")]
+
+    CSS = """
+    TrainingConfigScreen {
+        align: center middle;
+    }
+
+    #config-shell {
+        width: 88;
+        max-width: 92%;
+        padding: 1 2;
+        border: round $surface;
+        background: $panel;
+    }
+
+    .config-label {
+        margin-top: 1;
+    }
+
+    #config-status {
+        min-height: 3;
+        margin-top: 1;
+        padding: 0 1;
+        border: round $surface;
+    }
+
+    #config-actions {
+        height: auto;
+        margin-top: 1;
+    }
+
+    Button {
+        margin-right: 1;
+    }
+    """
+
+    def __init__(self, initial: TrainingConfigChoice) -> None:
+        super().__init__()
+        self.initial = initial
+
+    def compose(self) -> ComposeResult:
+        with Center():
+            with Middle():
+                with Vertical(id="config-shell"):
+                    yield Label("Training Configuration")
+                    yield Static(
+                        "Set the main RF-DETR segmentation training parameters before training starts.",
+                    )
+                    yield Label("Image Size", classes="config-label")
+                    yield Input(str(self.initial.image_size), id="image-size")
+                    yield Label("Epochs", classes="config-label")
+                    yield Input(str(self.initial.epochs), id="epochs")
+                    yield Label("Batch Size", classes="config-label")
+                    yield Input(str(self.initial.batch_size), id="batch-size")
+                    yield Label("Workers", classes="config-label")
+                    yield Input(str(self.initial.num_workers), id="num-workers")
+                    yield Label("Output Directory", classes="config-label")
+                    yield Input(self.initial.output_dir, id="output-dir")
+                    yield Checkbox(
+                        "Enable early stopping",
+                        value=self.initial.early_stopping,
+                        id="early-stopping",
+                    )
+                    yield Label("Early Stopping Patience", classes="config-label")
+                    yield Input(
+                        str(self.initial.early_stopping_patience),
+                        id="early-stopping-patience",
+                    )
+                    yield Label("Early Stopping Min Delta", classes="config-label")
+                    yield Input(
+                        str(self.initial.early_stopping_min_delta),
+                        id="early-stopping-min-delta",
+                    )
+                    yield Checkbox(
+                        "Use EMA metric for early stopping",
+                        value=self.initial.early_stopping_use_ema,
+                        id="early-stopping-use-ema",
+                    )
+                    with Horizontal(id="config-actions"):
+                        yield Button(
+                            "Start Training", id="start-training", variant="primary"
+                        )
+                        yield Button("Cancel", id="cancel-training")
+                    yield Static("", id="config-status")
+
+    def on_mount(self) -> None:
+        self.query_one("#image-size", Input).focus()
+        self.set_status("Adjust the values and start training.")
+
+    @on(Button.Pressed, "#start-training")
+    def press_start(self) -> None:
+        self.submit()
+
+    @on(Button.Pressed, "#cancel-training")
+    def press_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Submitted)
+    def submit_on_enter(self) -> None:
+        self.submit()
+
+    def submit(self) -> None:
+        try:
+            config = TrainingConfigChoice(
+                image_size=int(self.query_one("#image-size", Input).value),
+                epochs=int(self.query_one("#epochs", Input).value),
+                batch_size=int(self.query_one("#batch-size", Input).value),
+                num_workers=int(self.query_one("#num-workers", Input).value),
+                output_dir=self.query_one("#output-dir", Input).value.strip(),
+                early_stopping=self.query_one("#early-stopping", Checkbox).value,
+                early_stopping_patience=int(
+                    self.query_one("#early-stopping-patience", Input).value
+                ),
+                early_stopping_min_delta=float(
+                    self.query_one("#early-stopping-min-delta", Input).value
+                ),
+                early_stopping_use_ema=self.query_one(
+                    "#early-stopping-use-ema", Checkbox
+                ).value,
+            )
+        except ValueError:
+            self.set_status(
+                "Image size, epochs, batch size, workers, patience, and min delta must be valid numbers.",
+                error=True,
+            )
+            return
+
+        if (
+            config.image_size <= 0
+            or config.epochs <= 0
+            or config.batch_size <= 0
+            or config.num_workers < 0
+        ):
+            self.set_status(
+                "Image size, epochs, and batch size must be positive. Workers cannot be negative.",
+                error=True,
+            )
+            return
+        if not config.output_dir:
+            self.set_status("An output directory is required.", error=True)
+            return
+        if config.early_stopping and config.early_stopping_patience <= 0:
+            self.set_status(
+                "Early stopping patience must be positive when early stopping is enabled.",
+                error=True,
+            )
+            return
+
+        self.dismiss(config)
+
+    def set_status(self, message: str, *, error: bool = False) -> None:
+        status = self.query_one("#config-status", Static)
+        status.update(message)
+        if error:
+            status.styles.border = ("round", "red")
+            status.styles.color = "red"
+        else:
+            status.styles.border = ("round", "cyan")
+            status.styles.color = "white"
+
+
+class TrainingDetailsScreen(ModalScreen[None]):
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("i", "dismiss", "Close"),
+        ("ctrl+c", "app.quit", "Quit"),
+    ]
+
+    CSS = """
+    TrainingDetailsScreen {
+        align: center middle;
+    }
+
+    #training-details-shell {
+        width: 140;
+        padding: 1 2;
+        border: round $surface;
+        background: $panel;
+    }
+
+    #training-details-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #training-details-body {
+        border: round $surface-lighten-1;
+        padding: 1;
+    }
+
+    #training-details-help {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, summary: str) -> None:
+        super().__init__()
+        self.summary = summary
+
+    def compose(self) -> ComposeResult:
+        with Center():
+            with Middle():
+                with Vertical(id="training-details-shell"):
+                    yield Label("Training Run Details", id="training-details-title")
+                    yield Static(self.summary, id="training-details-body")
+                    yield Static("Press Escape to close.", id="training-details-help")
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 class MainScreen(Screen[None]):
     BINDINGS = [
         ("a", "authenticate", "Auth"),
+        ("i", "toggle_training_details", "Run Details"),
         ("b", "go_back", "Back"),
         ("ctrl+c", "app.quit", "Quit"),
     ]
@@ -630,6 +1041,7 @@ class MainScreen(Screen[None]):
     }
 
     #steps {
+        height: auto;
         margin-bottom: 1;
         padding: 0 1;
         border: round $surface;
@@ -673,6 +1085,49 @@ class MainScreen(Screen[None]):
         margin-top: 1;
     }
 
+    #training-panel {
+        display: none;
+        height: 1fr;
+        border: round $surface;
+        padding: 1;
+        margin-top: 1;
+    }
+
+    #training-metrics {
+        height: 9;
+        margin-bottom: 1;
+    }
+
+    .training-metric {
+        width: 1fr;
+        height: 100%;
+        border: round $surface-lighten-1;
+        padding: 0 1;
+        margin-right: 1;
+    }
+
+    .metric-title {
+        text-style: bold;
+    }
+
+    .metric-summary {
+        color: $text-muted;
+    }
+
+    .metric-chart {
+        height: 1fr;
+    }
+
+    #training-log-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #training-log {
+        height: 1fr;
+        border: round $surface-lighten-1;
+    }
+
     #status-bar {
         dock: bottom;
         height: 3;
@@ -700,6 +1155,8 @@ class MainScreen(Screen[None]):
         self._catalog_loading = False
         self._catalog_task: asyncio.Task[None] | None = None
         self._download_task: asyncio.Task[None] | None = None
+        self._training_task: asyncio.Task[None] | None = None
+        self._gpu_task: asyncio.Task[None] | None = None
         self._step = "projects"
         self.projects: list[ProjectChoice] = []
         self.versions: list[VersionChoice] = []
@@ -708,8 +1165,14 @@ class MainScreen(Screen[None]):
         self.selected_project: ProjectChoice | None = None
         self.selected_version: VersionChoice | None = None
         self.selected_model: ModelChoice | None = None
+        self.training_config: TrainingConfigChoice | None = None
         self.download_path: Path | None = None
         self.weights_path: Path | None = None
+        self.training_output_path: Path | None = None
+        self.training_log_path: Path | None = None
+        self._gpu_utilization_history: deque[float] = deque(maxlen=GPU_HISTORY_LENGTH)
+        self._gpu_memory_history: deque[float] = deque(maxlen=GPU_HISTORY_LENGTH)
+        self._gpu_supported = shutil.which("nvidia-smi") is not None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main-shell"):
@@ -724,6 +1187,33 @@ class MainScreen(Screen[None]):
             yield Static("", id="step-help")
             yield LoadingIndicator(id="catalog-loader")
             yield OptionList(id="choices")
+            with Vertical(id="training-panel"):
+                with Horizontal(id="training-metrics"):
+                    with Vertical(classes="training-metric"):
+                        yield Label("GPU Utilization", classes="metric-title")
+                        yield Sparkline(
+                            [], id="gpu-utilization-chart", classes="metric-chart"
+                        )
+                        yield Static(
+                            "", id="gpu-utilization-summary", classes="metric-summary"
+                        )
+                    with Vertical(classes="training-metric"):
+                        yield Label("GPU Memory", classes="metric-title")
+                        yield Sparkline(
+                            [], id="gpu-memory-chart", classes="metric-chart"
+                        )
+                        yield Static(
+                            "", id="gpu-memory-summary", classes="metric-summary"
+                        )
+                yield Label("Training Logs", id="training-log-title")
+                yield RichLog(
+                    id="training-log",
+                    wrap=True,
+                    markup=False,
+                    highlight=False,
+                    auto_scroll=True,
+                    max_lines=TRAINING_LOG_LINES,
+                )
             yield Static("", id="wizard-status")
             yield ProgressBar(id="download-progress")
             with Horizontal(id="status-bar"):
@@ -733,12 +1223,20 @@ class MainScreen(Screen[None]):
     async def on_mount(self) -> None:
         self.query_one("#download-progress", ProgressBar).display = False
         self.query_one("#catalog-loader", LoadingIndicator).display = False
+        self.query_one("#training-panel", Vertical).display = False
         self.refresh_session(load_roboflow_session())
+        self.update_gpu_widgets([])
         self.refresh_wizard()
         if self._session.logged_in:
             self.begin_catalog_load()
         else:
             self.show_login_required()
+
+    def action_toggle_training_details(self) -> None:
+        summary = self.render_training_details()
+        if summary is None:
+            return
+        self.app.push_screen(TrainingDetailsScreen(summary))
 
     def action_authenticate(self) -> None:
         app = self.app
@@ -751,22 +1249,40 @@ class MainScreen(Screen[None]):
         if self._busy:
             return
         if self._step == "versions":
+            await self.stop_gpu_monitor()
             self.selected_project = None
             self.selected_version = None
             self.selected_model = None
+            self.training_config = None
             self.download_path = None
             self.weights_path = None
+            self.training_output_path = None
+            self.clear_training_runtime_view()
             self._step = "projects"
             self.refresh_wizard()
         elif self._step == "models":
+            await self.stop_gpu_monitor()
             self.selected_model = None
+            self.training_config = None
             self.weights_path = None
+            self.training_output_path = None
+            self.clear_training_runtime_view()
             self._step = "download"
             self.refresh_wizard()
         elif self._step == "weights":
             self.weights_path = None
             self._step = "models"
             self.refresh_wizard()
+        elif self._step == "config":
+            await self.stop_gpu_monitor()
+            self.training_config = None
+            self.training_output_path = None
+            self.clear_training_runtime_view()
+            self._step = "models"
+            self.refresh_wizard()
+        elif self._step == "training" and self._training_task is None:
+            self.training_output_path = None
+            self.open_training_config()
         elif self._step == "download":
             self.download_path = None
             self._step = "versions"
@@ -783,43 +1299,195 @@ class MainScreen(Screen[None]):
             self.selected_project = self.projects[index]
             self.selected_version = None
             self.selected_model = None
+            self.training_config = None
             self.download_path = None
             self.weights_path = None
+            self.training_output_path = None
+            self.clear_training_runtime_view()
             self.show_versions()
         elif self._step == "versions":
             self.selected_version = self.versions[index]
             self.selected_model = None
+            self.training_config = None
             self.download_path = None
             self.weights_path = None
+            self.training_output_path = None
+            self.clear_training_runtime_view()
             self.begin_download()
         elif self._step == "models":
             self.selected_model = self.models[index]
+            self.training_config = None
             self.weights_path = None
+            self.training_output_path = None
+            self.clear_training_runtime_view()
             self.begin_weights_download()
 
     def refresh_session(self, session: RoboflowSession) -> None:
         self._session = session
         workspace_status = self.query_one("#workspace-status", Static)
-        auth_hint = self.query_one("#auth-hint", Static)
         status_bar = self.query_one("#status-bar", Horizontal)
 
         if session.logged_in:
             workspace_status.update(f"Workspace: {session.identity_label}")
-            auth_hint.update(f"{AUTH_KEY} reauth")
             status_bar.styles.border = ("round", "green")
             status_bar.styles.color = "green"
         else:
             workspace_status.update("Workspace: not authenticated")
-            auth_hint.update(f"{AUTH_KEY} login")
             status_bar.styles.border = ("round", "red")
             status_bar.styles.color = "red"
 
+        self.refresh_status_hints()
+
+    def refresh_status_hints(self) -> None:
+        try:
+            auth_hint = self.query_one("#auth-hint", Static)
+        except NoMatches:
+            return
+
+        hints = [f"{AUTH_KEY} {'reauth' if self._session.logged_in else 'login'}"]
+        if self.render_training_details() is not None:
+            hints.append("I details")
+        auth_hint.update("  |  ".join(hints))
+
+    def clear_training_runtime_view(self) -> None:
+        self.training_log_path = None
+        self._gpu_utilization_history.clear()
+        self._gpu_memory_history.clear()
+        try:
+            self.query_one("#training-log", RichLog).clear()
+        except NoMatches:
+            return
+        self.update_gpu_widgets([])
+
+    def show_training_panel(self, visible: bool) -> None:
+        try:
+            panel = self.query_one("#training-panel", Vertical)
+            choices = self.query_one("#choices", OptionList)
+            loader = self.query_one("#catalog-loader", LoadingIndicator)
+        except NoMatches:
+            return
+
+        panel.display = visible
+        if visible:
+            choices.display = False
+            loader.display = False
+        elif self._catalog_loading:
+            loader.display = True
+            choices.display = False
+        else:
+            loader.display = False
+            choices.display = True
+
+    def append_training_log(self, line: str) -> None:
+        if not line:
+            return
+        try:
+            log_widget = self.query_one("#training-log", RichLog)
+        except NoMatches:
+            return
+        log_widget.write(line)
+
+    def update_gpu_widgets(self, snapshots: list[GpuSnapshot]) -> None:
+        try:
+            util_chart = self.query_one("#gpu-utilization-chart", Sparkline)
+            util_summary = self.query_one("#gpu-utilization-summary", Static)
+            memory_chart = self.query_one("#gpu-memory-chart", Sparkline)
+            memory_summary = self.query_one("#gpu-memory-summary", Static)
+        except NoMatches:
+            return
+
+        if not snapshots:
+            if self._gpu_supported:
+                if self._gpu_utilization_history:
+                    util_summary.update("Waiting for GPU telemetry...")
+                    memory_summary.update("Waiting for GPU telemetry...")
+                else:
+                    util_summary.update("No GPU telemetry reported yet.")
+                    memory_summary.update("No GPU telemetry reported yet.")
+            else:
+                util_summary.update("GPU telemetry unavailable on this system.")
+                memory_summary.update("GPU telemetry unavailable on this system.")
+            util_chart.data = list(self._gpu_utilization_history) or [0]
+            memory_chart.data = list(self._gpu_memory_history) or [0]
+            return
+
+        average_utilization = sum(item.utilization for item in snapshots) / len(
+            snapshots
+        )
+        average_memory = sum(item.memory_percent for item in snapshots) / len(snapshots)
+        self._gpu_utilization_history.append(average_utilization)
+        self._gpu_memory_history.append(average_memory)
+        util_chart.data = list(self._gpu_utilization_history)
+        memory_chart.data = list(self._gpu_memory_history)
+
+        util_summary.update(
+            " | ".join(
+                f"GPU {item.index}: {item.utilization:.0f}%" for item in snapshots
+            )
+        )
+        memory_summary.update(
+            " | ".join(
+                (
+                    f"GPU {item.index}: {item.memory_used_mb:.0f}/"
+                    f"{item.memory_total_mb:.0f} MB ({item.memory_percent:.0f}%)"
+                )
+                for item in snapshots
+            )
+        )
+
+    async def monitor_gpu_metrics(self) -> None:
+        if not self._gpu_supported:
+            self.update_gpu_widgets([])
+            return
+
+        try:
+            while self._training_task is not None:
+                try:
+                    snapshots = await asyncio.to_thread(query_gpu_snapshots)
+                except Exception:
+                    snapshots = []
+                self.update_gpu_widgets(snapshots)
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+
+    def start_gpu_monitor(self) -> None:
+        if self._gpu_task is not None:
+            return
+        self._gpu_task = asyncio.create_task(self.monitor_gpu_metrics())
+
+    async def stop_gpu_monitor(self) -> None:
+        if self._gpu_task is None:
+            return
+        task = self._gpu_task
+        self._gpu_task = None
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def handle_training_event(
+        self,
+        phase: str,
+        message: str,
+        progress: float,
+        total: float | None,
+    ) -> None:
+        if message:
+            self.set_status(message)
+            self.append_training_log(message)
+
     async def restart_wizard(self) -> None:
+        await self.stop_gpu_monitor()
         self.selected_project = None
         self.selected_version = None
         self.selected_model = None
+        self.training_config = None
         self.download_path = None
         self.weights_path = None
+        self.training_output_path = None
+        self.clear_training_runtime_view()
         self.projects = []
         self.versions = []
         self.version_cache = {}
@@ -904,6 +1572,76 @@ class MainScreen(Screen[None]):
         self.set_status("Select an RF-DETR segmentation model size.")
         self.refresh_wizard()
 
+    def build_training_config(self) -> TrainingConfigChoice | None:
+        if self.training_config is not None:
+            return self.training_config
+        if (
+            self.selected_project is None
+            or self.selected_version is None
+            or self.selected_model is None
+        ):
+            return None
+
+        return default_training_config(
+            self.selected_project,
+            self.selected_version,
+            self.selected_model,
+        )
+
+    def open_training_config(self) -> None:
+        config = self.build_training_config()
+        if config is None:
+            return
+        self._step = "config"
+        self.refresh_wizard()
+        self.app.push_screen(
+            TrainingConfigScreen(config),
+            callback=self.handle_training_config,
+        )
+
+    def handle_training_config(self, config: TrainingConfigChoice | None) -> None:
+        if config is None:
+            if self.training_config is None:
+                self._step = "models"
+                self.set_status(
+                    "Training configuration cancelled. Select a model size to continue."
+                )
+            else:
+                self._step = "config"
+                self.set_status("Training configuration cancelled.")
+            self.refresh_wizard()
+            return
+        self.training_config = config
+        self.begin_training()
+
+    def begin_training(self) -> None:
+        if (
+            self.selected_model is None
+            or self.download_path is None
+            or self.weights_path is None
+            or self.training_config is None
+            or self._training_task is not None
+        ):
+            return
+
+        self._step = "training"
+        self.training_output_path = None
+        self.clear_training_runtime_view()
+        output_dir = Path(self.training_config.output_dir).expanduser().resolve()
+        self.training_log_path = output_dir / "training.log"
+        self.hide_progress()
+        self.show_training_panel(True)
+        self.set_busy(
+            True,
+            f"Starting training for {self.selected_model.label}...",
+        )
+        self.append_training_log(
+            f"Starting RF-DETR training for {self.selected_model.label}."
+        )
+        self.refresh_wizard()
+        self._training_task = asyncio.create_task(self.run_training_task())
+        self.start_gpu_monitor()
+
     def begin_weights_download(self) -> None:
         if self.selected_model is None or self._download_task is not None:
             return
@@ -973,25 +1711,75 @@ class MainScreen(Screen[None]):
         else:
             self.hide_progress()
             self.set_status(f"Pretrained weights downloaded to {self.weights_path}")
+            self.open_training_config()
         finally:
             self._download_task = None
             self.set_busy(False)
             self.refresh_wizard()
 
+    async def run_training_task(self) -> None:
+        if (
+            self.selected_model is None
+            or self.download_path is None
+            or self.weights_path is None
+            or self.training_config is None
+        ):
+            return
+
+        try:
+            self.training_output_path = await asyncio.to_thread(
+                run_training,
+                self.selected_model,
+                self.download_path,
+                self.weights_path,
+                self.training_config,
+                lambda phase, message, progress, total: self.app.call_from_thread(
+                    self.handle_training_event,
+                    phase,
+                    message,
+                    progress,
+                    total,
+                ),
+            )
+        except Exception as exc:
+            self.training_output_path = None
+            self.set_status(f"Training failed: {exc}", error=True)
+            self.append_training_log(f"Training failed: {exc}")
+        else:
+            self.set_status(
+                f"Training completed. Outputs written to {self.training_output_path}"
+            )
+        finally:
+            self._training_task = None
+            await self.stop_gpu_monitor()
+            snapshots = await asyncio.to_thread(query_gpu_snapshots)
+            self.update_gpu_widgets(snapshots)
+            self.show_training_panel(self._step == "training")
+            self.set_busy(False)
+            self.refresh_wizard()
+
     def refresh_wizard(self) -> None:
         try:
-            self.query_one("#steps", Static).update(self.render_steps())
-            self.query_one("#selection", Static).update(self.render_selection())
-            self.query_one("#step-title", Static).update(self.render_step_title())
-            self.query_one("#step-help", Static).update(self.render_step_help())
+            steps = self.query_one("#steps", Static)
+            selection = self.query_one("#selection", Static)
+            step_title = self.query_one("#step-title", Static)
+            step_help = self.query_one("#step-help", Static)
         except NoMatches:
             return
+
+        steps.update(self.render_steps())
+        selection.update(self.render_selection())
+        selection.display = self._step != "training"
+        step_title.update(self.render_step_title())
+        step_help.update(self.render_step_help())
+        self.refresh_status_hints()
+        self.show_training_panel(self._step == "training")
         self.refresh_choices()
 
     def refresh_choices(self) -> None:
         choices = self.query_one("#choices", OptionList)
         choices.clear_options()
-        choices.display = not self._catalog_loading
+        choices.display = not self._catalog_loading and self._step != "training"
 
         prompts: list[str]
         if not self._session.logged_in or self._catalog_loading:
@@ -1049,9 +1837,11 @@ class MainScreen(Screen[None]):
     def show_catalog_loader(self, visible: bool) -> None:
         try:
             loader = self.query_one("#catalog-loader", LoadingIndicator)
+            panel = self.query_one("#training-panel", Vertical)
         except NoMatches:
             return
         loader.display = visible
+        panel.display = False
         try:
             choices = self.query_one("#choices", OptionList)
         except NoMatches:
@@ -1092,27 +1882,37 @@ class MainScreen(Screen[None]):
 
     def render_steps(self) -> str:
         steps = [
-            ("projects", "1. Project", self.selected_project is not None),
-            ("versions", "2. Dataset Version", self.selected_version is not None),
-            ("download", "3. Dataset Download", self.download_path is not None),
-            ("models", "4. Model Size", self.selected_model is not None),
-            ("weights", "5. Weights", self.weights_path is not None),
+            ("projects", "Project", self.selected_project is not None),
+            ("versions", "Version", self.selected_version is not None),
+            ("download", "Dataset", self.download_path is not None),
+            ("models", "Model", self.selected_model is not None),
+            ("weights", "Weights", self.weights_path is not None),
+            ("config", "Config", self.training_config is not None),
+            ("training", "Train", self.training_output_path is not None),
         ]
 
-        lines: list[str] = []
+        parts: list[str] = []
         for key, label, complete in steps:
-            marker = ">"
             if complete:
-                marker = "x"
-            elif self._step != key and not self.is_step_reached(key):
-                marker = " "
-            elif self._step != key:
-                marker = "-"
-            lines.append(f"[{marker}] {label}")
-        return "\n".join(lines)
+                parts.append(f"✓ {label}")
+            elif self._step == key:
+                parts.append(f"● {label}")
+            elif self.is_step_reached(key):
+                parts.append(f"• {label}")
+            else:
+                parts.append(label)
+        return "  >  ".join(parts)
 
     def is_step_reached(self, key: str) -> bool:
-        order = ["projects", "versions", "download", "models", "weights"]
+        order = [
+            "projects",
+            "versions",
+            "download",
+            "models",
+            "weights",
+            "config",
+            "training",
+        ]
         return order.index(self._step) >= order.index(key)
 
     def render_selection(self) -> str:
@@ -1121,13 +1921,64 @@ class MainScreen(Screen[None]):
         model = self.selected_model.label if self.selected_model else "-"
         location = str(self.download_path) if self.download_path else "-"
         weights = str(self.weights_path) if self.weights_path else "-"
+        training_output = (
+            str(self.training_output_path) if self.training_output_path else "-"
+        )
+        training_log = str(self.training_log_path) if self.training_log_path else "-"
+
+        if self._step == "training":
+            return (
+                "Run details are hidden during training.\n"
+                "Press I to show the full configuration and paths.\n"
+                f"Training Log: {training_log}\n"
+                f"Training Output: {training_output}"
+            )
+
         return (
             f"Project: {project}\n"
             f"Version: {version}\n"
             f"Format: {DATASET_FORMAT_LABEL}\n"
             f"Dataset: {location}\n"
             f"Model: {model}\n"
-            f"Weights: {weights}"
+            f"Weights: {weights}\n"
+            f"Training Log: {training_log}\n"
+            f"Training Output: {training_output}"
+        )
+
+    def render_training_details(self) -> str | None:
+        if self.training_config is None:
+            return None
+
+        project = self.selected_project.slug if self.selected_project else "-"
+        version = str(self.selected_version.number) if self.selected_version else "-"
+        model = self.selected_model.label if self.selected_model else "-"
+        dataset = str(self.download_path) if self.download_path else "-"
+        weights = str(self.weights_path) if self.weights_path else "-"
+        training_log = str(self.training_log_path) if self.training_log_path else "-"
+        training_output = (
+            str(self.training_output_path) if self.training_output_path else "-"
+        )
+        early_stopping = "enabled" if self.training_config.early_stopping else "disabled"
+        use_ema = "yes" if self.training_config.early_stopping_use_ema else "no"
+
+        return (
+            f"Project: {project}\n"
+            f"Version: {version}\n"
+            f"Format: {DATASET_FORMAT_LABEL}\n"
+            f"Dataset: {dataset}\n"
+            f"Model: {model}\n"
+            f"Weights: {weights}\n"
+            f"Image Size: {self.training_config.image_size}\n"
+            f"Epochs: {self.training_config.epochs}\n"
+            f"Batch Size: {self.training_config.batch_size}\n"
+            f"Workers: {self.training_config.num_workers}\n"
+            f"Early Stopping: {early_stopping}\n"
+            f"Patience: {self.training_config.early_stopping_patience}\n"
+            f"Min Delta: {self.training_config.early_stopping_min_delta}\n"
+            f"EMA Metric: {use_ema}\n"
+            f"Output Dir: {self.training_config.output_dir}\n"
+            f"Training Log: {training_log}\n"
+            f"Training Output: {training_output}"
         )
 
     def render_step_title(self) -> str:
@@ -1139,6 +1990,8 @@ class MainScreen(Screen[None]):
             "download": "Dataset Download",
             "models": "Choose RF-DETR Segmentation Size",
             "weights": "Pretrained Weight Download",
+            "config": "Training Configuration",
+            "training": "RF-DETR Training Monitor",
         }
         return titles[self._step]
 
@@ -1154,10 +2007,29 @@ class MainScreen(Screen[None]):
         if self._step == "models":
             return "Use Up/Down to move, Enter to fetch pretrained weights. Press B to go back."
         if self._step == "weights" and self.weights_path is not None:
-            return "Weights downloaded. Press B to choose a different model size."
-        if self.download_path is not None:
-            return "Downloading the selected asset."
-        return "Downloading the selected asset."
+            return (
+                "Weights downloaded. The training configuration window will open next."
+            )
+        if self._step == "config":
+            return (
+                "Adjust the training settings in the configuration window. "
+                "Press B to choose a different model size."
+            )
+        if self._step == "training" and self._training_task is not None:
+            return (
+                "Training is active. Live logs are streamed below, and GPU charts "
+                "appear when telemetry is available. Press I for run details."
+            )
+        if self._step == "training" and self.training_output_path is not None:
+            return (
+                "Training finished. Review the logs below, or press B to adjust the "
+                "configuration and train again. Press I for run details."
+            )
+        if self._step == "weights":
+            return "Downloading pretrained weights for the selected RF-DETR segmentation model."
+        if self._step == "download":
+            return "Downloading the selected COCO Segmentation dataset."
+        return "Complete the current step to continue."
 
 
 class TrainingGroundApp(App[None]):

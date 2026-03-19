@@ -1,6 +1,7 @@
 .DS_Store
 datasets/
 weights/
+training_runs/
 
 # Python-generated files
 __pycache__/
