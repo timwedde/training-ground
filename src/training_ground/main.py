@@ -2,15 +2,17 @@ import asyncio
 import concurrent.futures
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
 import zipfile
 from collections import deque
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Final
@@ -116,6 +118,31 @@ class GpuSnapshot:
         if self.memory_total_mb <= 0:
             return 0.0
         return (self.memory_used_mb / self.memory_total_mb) * 100.0
+
+
+@dataclass(slots=True)
+class EnvironmentHealth:
+    platform_label: str
+    accelerator: str
+    gpu_names: list[str] = field(default_factory=list)
+    torch_installed: bool = False
+    torch_version: str | None = None
+    torch_cuda_available: bool = False
+    torch_mps_available: bool = False
+    torch_cuda_built: bool = False
+    torch_mps_built: bool = False
+    rfdetr_installed: bool = False
+    training_ready: bool = False
+    issues: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def state_label(self) -> str:
+        if self.training_ready:
+            return "READY"
+        if self.issues:
+            return "NOT READY"
+        return "CHECK"
 
 
 MODEL_CHOICES: Final[tuple[ModelChoice, ...]] = (
@@ -446,6 +473,113 @@ def query_gpu_snapshots() -> list[GpuSnapshot]:
             continue
 
     return snapshots
+
+
+def run_environment_health_check() -> EnvironmentHealth:
+    system = platform.system()
+    machine = platform.machine()
+    health = EnvironmentHealth(
+        platform_label=f"{system} ({machine})",
+        accelerator="Unknown",
+    )
+
+    snapshots = query_gpu_snapshots()
+    if snapshots:
+        health.gpu_names = [snapshot.name for snapshot in snapshots]
+
+    health.rfdetr_installed = importlib.util.find_spec("rfdetr") is not None
+    if not health.rfdetr_installed:
+        health.issues.append("RF-DETR is not installed in the current environment.")
+
+    if importlib.util.find_spec("torch") is None:
+        health.accelerator = "No torch runtime"
+        health.issues.append("PyTorch is not installed in the current environment.")
+        if system == "Darwin":
+            health.warnings.append(
+                "MPS support could not be verified because torch is missing."
+            )
+        elif system == "Linux":
+            health.warnings.append(
+                "CUDA support could not be verified because torch is missing."
+            )
+        return health
+
+    try:
+        torch = importlib.import_module("torch")
+    except Exception as exc:
+        health.accelerator = "Torch import failed"
+        health.issues.append(f"PyTorch failed to import: {exc}")
+        return health
+
+    health.torch_installed = True
+    health.torch_version = getattr(torch, "__version__", "unknown")
+
+    cuda_api = getattr(torch, "cuda", None)
+    if cuda_api is not None:
+        try:
+            health.torch_cuda_available = bool(cuda_api.is_available())
+        except Exception:
+            health.torch_cuda_available = False
+        health.torch_cuda_built = getattr(torch.version, "cuda", None) is not None
+
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is not None:
+        try:
+            health.torch_mps_built = bool(mps_backend.is_built())
+        except Exception:
+            health.torch_mps_built = False
+        try:
+            health.torch_mps_available = bool(mps_backend.is_available())
+        except Exception:
+            health.torch_mps_available = False
+
+    if system == "Darwin":
+        health.accelerator = "MPS"
+        if machine != "arm64":
+            health.issues.append("MPS training requires Apple Silicon on macOS.")
+        if not health.torch_mps_built:
+            health.issues.append("This PyTorch build does not include MPS support.")
+        elif not health.torch_mps_available:
+            health.issues.append("PyTorch MPS support is present but not available.")
+        if machine == "arm64" and not health.gpu_names:
+            health.gpu_names = ["Apple Silicon GPU"]
+        health.training_ready = (
+            health.rfdetr_installed
+            and health.torch_installed
+            and health.torch_mps_built
+            and health.torch_mps_available
+        )
+    elif system == "Linux":
+        health.accelerator = "CUDA"
+        if not health.gpu_names:
+            health.issues.append("No NVIDIA GPUs were detected with nvidia-smi.")
+        if not health.torch_cuda_built:
+            health.issues.append("This PyTorch build does not include CUDA support.")
+        elif not health.torch_cuda_available:
+            health.issues.append("PyTorch CUDA support is present but unavailable.")
+        health.training_ready = (
+            health.rfdetr_installed
+            and health.torch_installed
+            and bool(health.gpu_names)
+            and health.torch_cuda_built
+            and health.torch_cuda_available
+        )
+    else:
+        health.accelerator = "Unsupported"
+        health.issues.append(
+            "Training Ground currently supports MPS on macOS or CUDA on Linux."
+        )
+
+    if system == "Linux" and health.gpu_names and not health.torch_cuda_available:
+        health.warnings.append(
+            "NVIDIA GPUs are present, but the current torch install cannot use CUDA."
+        )
+    if system == "Darwin" and machine == "arm64" and not health.torch_mps_available:
+        health.warnings.append(
+            "Apple Silicon is present, but the current torch install cannot use MPS."
+        )
+
+    return health
 
 
 def default_training_config(
@@ -1047,6 +1181,13 @@ class MainScreen(Screen[None]):
         border: round $surface;
     }
 
+    #health-status {
+        min-height: 4;
+        margin-bottom: 1;
+        padding: 0 1;
+        border: round $surface;
+    }
+
     #selection {
         min-height: 4;
         margin-bottom: 1;
@@ -1170,6 +1311,7 @@ class MainScreen(Screen[None]):
         self.weights_path: Path | None = None
         self.training_output_path: Path | None = None
         self.training_log_path: Path | None = None
+        self.environment_health: EnvironmentHealth | None = None
         self._gpu_utilization_history: deque[float] = deque(maxlen=GPU_HISTORY_LENGTH)
         self._gpu_memory_history: deque[float] = deque(maxlen=GPU_HISTORY_LENGTH)
         self._gpu_supported = shutil.which("nvidia-smi") is not None
@@ -1182,6 +1324,7 @@ class MainScreen(Screen[None]):
                 id="intro",
             )
             yield Static("", id="steps")
+            yield Static("", id="health-status")
             yield Static("", id="selection")
             yield Static("", id="step-title")
             yield Static("", id="step-help")
@@ -1491,6 +1634,7 @@ class MainScreen(Screen[None]):
         self.projects = []
         self.versions = []
         self.version_cache = {}
+        self.environment_health = None
         self._step = "projects"
         self.refresh_wizard()
         if self._session.logged_in:
@@ -1508,20 +1652,36 @@ class MainScreen(Screen[None]):
 
     async def load_projects(self) -> None:
         self._step = "projects"
-        self.set_busy(True, "Loading Roboflow projects and dataset versions...")
+        self.set_busy(
+            True,
+            "Loading Roboflow projects, dataset versions, and training environment health...",
+        )
 
         try:
-            self.projects, self.version_cache = await asyncio.to_thread(
-                fetch_projects_with_versions
+            (
+                (self.projects, self.version_cache),
+                self.environment_health,
+            ) = await asyncio.gather(
+                asyncio.to_thread(fetch_projects_with_versions),
+                asyncio.to_thread(run_environment_health_check),
             )
         except Exception as exc:
             self.projects = []
             self.version_cache = {}
+            self.environment_health = None
             self.set_status(f"Could not load projects: {exc}", error=True)
         else:
             if not self.projects:
                 self.set_status(
                     "No projects with dataset versions are available in this workspace.",
+                    error=True,
+                )
+            elif (
+                self.environment_health is not None
+                and not self.environment_health.training_ready
+            ):
+                self.set_status(
+                    "Projects loaded, but the training environment is not ready. Review the health panel before starting training.",
                     error=True,
                 )
             else:
@@ -1622,6 +1782,14 @@ class MainScreen(Screen[None]):
             or self.training_config is None
             or self._training_task is not None
         ):
+            return
+        if self.environment_health is not None and not self.environment_health.training_ready:
+            issue = (
+                self.environment_health.issues[0]
+                if self.environment_health.issues
+                else "The training environment is not ready."
+            )
+            self.set_status(f"Training cannot start: {issue}", error=True)
             return
 
         self._step = "training"
@@ -1761,6 +1929,7 @@ class MainScreen(Screen[None]):
     def refresh_wizard(self) -> None:
         try:
             steps = self.query_one("#steps", Static)
+            health_status = self.query_one("#health-status", Static)
             selection = self.query_one("#selection", Static)
             step_title = self.query_one("#step-title", Static)
             step_help = self.query_one("#step-help", Static)
@@ -1768,6 +1937,8 @@ class MainScreen(Screen[None]):
             return
 
         steps.update(self.render_steps())
+        health_status.update(self.render_health_status())
+        self.apply_health_styles(health_status)
         selection.update(self.render_selection())
         selection.display = self._step != "training"
         step_title.update(self.render_step_title())
@@ -1944,6 +2115,40 @@ class MainScreen(Screen[None]):
             f"Training Log: {training_log}\n"
             f"Training Output: {training_output}"
         )
+
+    def render_health_status(self) -> str:
+        if self._catalog_loading and self.environment_health is None:
+            return "Health: checking training environment...\nTorch, RF-DETR, and accelerator support are being verified."
+        if self.environment_health is None:
+            return "Health: not checked yet"
+
+        health = self.environment_health
+        torch_label = (
+            f"torch {health.torch_version}"
+            if health.torch_installed and health.torch_version
+            else "torch missing"
+        )
+        gpu_label = ", ".join(health.gpu_names) if health.gpu_names else "no compatible GPU detected"
+        detail = "ready for training" if health.training_ready else (
+            health.issues[0] if health.issues else "environment needs attention"
+        )
+        return (
+            f"Health: {health.state_label} | {health.platform_label} | {health.accelerator} | {torch_label}\n"
+            f"Devices: {gpu_label}\n"
+            f"RF-DETR: {'installed' if health.rfdetr_installed else 'missing'} | {detail}"
+        )
+
+    def apply_health_styles(self, widget: Static) -> None:
+        if self.environment_health is None:
+            widget.styles.border = ("round", "yellow")
+            widget.styles.color = "white"
+            return
+        if self.environment_health.training_ready:
+            widget.styles.border = ("round", "green")
+            widget.styles.color = "white"
+            return
+        widget.styles.border = ("round", "red")
+        widget.styles.color = "white"
 
     def render_training_details(self) -> str | None:
         if self.training_config is None:
