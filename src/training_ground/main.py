@@ -1710,7 +1710,6 @@ class MainScreen(Screen[None]):
         total: float | None,
     ) -> None:
         if message:
-            self.set_status(message)
             self.append_training_log(message)
             if phase != "log":
                 self.persist_training_log_line(message)
@@ -1888,15 +1887,14 @@ class MainScreen(Screen[None]):
 
         self._step = "training"
         self.training_output_path = None
+        self._status_message = None
+        self._status_error = False
         self.clear_training_runtime_view()
         output_dir = Path(self.training_config.output_dir).expanduser().resolve()
         self.training_log_path = output_dir / "training.log"
         self.hide_progress()
         self.show_training_panel(True)
-        self.set_busy(
-            True,
-            f"Starting training for {self.selected_model.label}...",
-        )
+        self.set_busy(True)
         self.append_training_log(f"Starting RF-DETR training for {self.selected_model.label}.")
         self.persist_training_log_line(
             f"Starting RF-DETR training for {self.selected_model.label}."
@@ -2006,11 +2004,10 @@ class MainScreen(Screen[None]):
             )
         except Exception as exc:
             self.training_output_path = None
-            self.set_status(f"Training failed: {exc}", error=True)
             self.append_training_log(f"Training failed: {exc}")
             self.persist_training_log_line(f"Training failed: {exc}")
         else:
-            self.set_status(
+            self.append_training_log(
                 f"Training completed. Outputs written to {self.training_output_path}"
             )
             self.persist_training_log_line(
