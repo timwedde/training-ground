@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Tim Wedde", email = "tim@agrowizard.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "rfdetr>=1.5.2",
     "textual>=8.1.1",
