@@ -219,7 +219,7 @@ def load_roboflow_session() -> RoboflowSession:
 
     try:
         payload = json.loads(config_path.read_text())
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return RoboflowSession(logged_in=False)
 
     workspace_slug = payload.get("RF_WORKSPACE")
@@ -336,7 +336,7 @@ def build_version_choices(version_info: list[object]) -> list[VersionChoice]:
 def parse_version_number(version_id: str) -> int:
     try:
         return int(version_id.rsplit("/", 1)[-1])
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0
 
 
@@ -449,7 +449,7 @@ def query_gpu_snapshots() -> list[GpuSnapshot]:
             timeout=5,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return []
     if result.returncode != 0:
         return []
@@ -623,7 +623,7 @@ def load_roboflow_class_names(dataset_path: Path) -> list[str]:
             continue
         try:
             category_id = int(category["id"])
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             continue
         category_by_id[category_id] = category
 
@@ -633,7 +633,7 @@ def load_roboflow_class_names(dataset_path: Path) -> list[str]:
             continue
         try:
             used_category_ids.add(int(annotation["category_id"]))
-        except KeyError, TypeError, ValueError:
+        except (KeyError, TypeError, ValueError):
             continue
 
     unknown_category_ids = sorted(used_category_ids.difference(category_by_id))
