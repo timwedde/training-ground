@@ -1530,6 +1530,13 @@ class MainScreen(Screen[None]):
             return
         log_widget.write(line)
 
+    def persist_training_log_line(self, line: str) -> None:
+        if not line or self.training_log_path is None:
+            return
+        self.training_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.training_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{line}\n")
+
     def update_gpu_widgets(self, snapshots: list[GpuSnapshot]) -> None:
         try:
             util_chart = self.query_one("#gpu-utilization-chart", Sparkline)
@@ -1620,6 +1627,8 @@ class MainScreen(Screen[None]):
         if message:
             self.set_status(message)
             self.append_training_log(message)
+            if phase != "log":
+                self.persist_training_log_line(message)
 
     async def restart_wizard(self) -> None:
         await self.stop_gpu_monitor()
@@ -1803,7 +1812,8 @@ class MainScreen(Screen[None]):
             True,
             f"Starting training for {self.selected_model.label}...",
         )
-        self.append_training_log(
+        self.append_training_log(f"Starting RF-DETR training for {self.selected_model.label}.")
+        self.persist_training_log_line(
             f"Starting RF-DETR training for {self.selected_model.label}."
         )
         self.refresh_wizard()
@@ -1913,8 +1923,12 @@ class MainScreen(Screen[None]):
             self.training_output_path = None
             self.set_status(f"Training failed: {exc}", error=True)
             self.append_training_log(f"Training failed: {exc}")
+            self.persist_training_log_line(f"Training failed: {exc}")
         else:
             self.set_status(
+                f"Training completed. Outputs written to {self.training_output_path}"
+            )
+            self.persist_training_log_line(
                 f"Training completed. Outputs written to {self.training_output_path}"
             )
         finally:
