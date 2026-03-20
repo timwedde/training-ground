@@ -2093,6 +2093,7 @@ name = "training-ground"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pycocotools" },
     { name = "pytorch-lightning" },
     { name = "rfdetr" },
     { name = "roboflow" },
@@ -2101,6 +2102,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pycocotools", specifier = ">=2.0.11" },
     { name = "pytorch-lightning", specifier = ">=2.6.1" },
     { name = "rfdetr", specifier = ">=1.5.2" },
     { name = "roboflow", specifier = ">=1.2.16" },
