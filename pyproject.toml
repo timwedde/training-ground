@@ -13,6 +13,7 @@ dependencies = [
     "roboflow>=1.2.16",
     "pytorch-lightning>=2.6.1",
     "pycocotools>=2.0.11",
+    "faster-coco-eval>=1.7.2",
 ]
 
 [project.scripts]
