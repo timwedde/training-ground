@@ -1939,6 +1939,7 @@ class MainScreen(Screen[None]):
         steps.update(self.render_steps())
         health_status.update(self.render_health_status())
         self.apply_health_styles(health_status)
+        health_status.display = self._step == "projects"
         selection.update(self.render_selection())
         selection.display = self._step != "training"
         step_title.update(self.render_step_title())
