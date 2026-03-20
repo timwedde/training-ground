@@ -623,7 +623,7 @@ def load_roboflow_class_names(dataset_path: Path) -> list[str]:
             continue
         try:
             category_id = int(category["id"])
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
         category_by_id[category_id] = category
 
@@ -633,7 +633,7 @@ def load_roboflow_class_names(dataset_path: Path) -> list[str]:
             continue
         try:
             used_category_ids.add(int(annotation["category_id"]))
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             continue
 
     unknown_category_ids = sorted(used_category_ids.difference(category_by_id))
@@ -1876,7 +1876,10 @@ class MainScreen(Screen[None]):
             or self._training_task is not None
         ):
             return
-        if self.environment_health is not None and not self.environment_health.training_ready:
+        if (
+            self.environment_health is not None
+            and not self.environment_health.training_ready
+        ):
             issue = (
                 self.environment_health.issues[0]
                 if self.environment_health.issues
@@ -1895,7 +1898,9 @@ class MainScreen(Screen[None]):
         self.hide_progress()
         self.show_training_panel(True)
         self.set_busy(True)
-        self.append_training_log(f"Starting RF-DETR training for {self.selected_model.label}.")
+        self.append_training_log(
+            f"Starting RF-DETR training for {self.selected_model.label}."
+        )
         self.persist_training_log_line(
             f"Starting RF-DETR training for {self.selected_model.label}."
         )
@@ -2226,9 +2231,15 @@ class MainScreen(Screen[None]):
             if health.torch_installed and health.torch_version
             else "torch missing"
         )
-        gpu_label = ", ".join(health.gpu_names) if health.gpu_names else "no compatible GPU detected"
-        detail = "ready for training" if health.training_ready else (
-            health.issues[0] if health.issues else "environment needs attention"
+        gpu_label = (
+            ", ".join(health.gpu_names)
+            if health.gpu_names
+            else "no compatible GPU detected"
+        )
+        detail = (
+            "ready for training"
+            if health.training_ready
+            else (health.issues[0] if health.issues else "environment needs attention")
         )
         return (
             f"Health: {health.state_label} | {health.platform_label} | {health.accelerator} | {torch_label}\n"
@@ -2261,7 +2272,9 @@ class MainScreen(Screen[None]):
         training_output = (
             str(self.training_output_path) if self.training_output_path else "-"
         )
-        early_stopping = "enabled" if self.training_config.early_stopping else "disabled"
+        early_stopping = (
+            "enabled" if self.training_config.early_stopping else "disabled"
+        )
         use_ema = "yes" if self.training_config.early_stopping_use_ema else "no"
 
         return (
