@@ -602,6 +602,73 @@ def default_training_config(
     )
 
 
+def load_roboflow_class_names(dataset_path: Path) -> list[str]:
+    annotations_path = dataset_path / "train" / "_annotations.coco.json"
+    if not annotations_path.exists():
+        raise FileNotFoundError(
+            f"Could not find Roboflow annotations at {annotations_path}"
+        )
+
+    payload = json.loads(annotations_path.read_text())
+    categories = payload.get("categories")
+    annotations = payload.get("annotations")
+    if not isinstance(categories, list) or not isinstance(annotations, list):
+        raise RuntimeError(
+            f"Invalid COCO annotations in {annotations_path}: missing categories or annotations."
+        )
+
+    category_by_id: dict[int, dict[str, object]] = {}
+    for category in categories:
+        if not isinstance(category, dict):
+            continue
+        try:
+            category_id = int(category["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        category_by_id[category_id] = category
+
+    used_category_ids: set[int] = set()
+    for annotation in annotations:
+        if not isinstance(annotation, dict):
+            continue
+        try:
+            used_category_ids.add(int(annotation["category_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    unknown_category_ids = sorted(used_category_ids.difference(category_by_id))
+    if unknown_category_ids:
+        raise RuntimeError(
+            "Annotations reference unknown category IDs: "
+            + ", ".join(str(category_id) for category_id in unknown_category_ids)
+        )
+
+    class_names: list[str] = []
+    for category_id in sorted(category_by_id):
+        category = category_by_id[category_id]
+        name = str(category.get("name") or category_id).strip()
+        supercategory = str(category.get("supercategory") or "").strip().lower()
+        normalized_name = name.lower()
+
+        is_placeholder_background = (
+            category_id not in used_category_ids
+            and normalized_name in {"none", "background", "__background__"}
+            and supercategory in {"", "none", "background", "__background__"}
+        )
+        if is_placeholder_background:
+            continue
+
+        class_names.append(name)
+
+    if not class_names:
+        raise RuntimeError(
+            f"No usable class names were found in {annotations_path}. "
+            "Check the COCO categories section."
+        )
+
+    return class_names
+
+
 def download_dataset(
     project_slug: str,
     version_number: int,
@@ -770,6 +837,14 @@ def run_training(
         0,
         1,
     )
+    class_names = load_roboflow_class_names(dataset_path)
+    report_progress(
+        callback,
+        "training",
+        f"Resolved {len(class_names)} training classes from Roboflow COCO annotations.",
+        0,
+        1,
+    )
     output_dir = Path(config.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "training.log"
@@ -786,24 +861,40 @@ def run_training(
         log_stream = TrainingLogStream(log_handle, callback)
         with redirect_stdout(log_stream), redirect_stderr(log_stream):
             detr_module = importlib.import_module("rfdetr.detr")
+            base_model_class = getattr(detr_module, "RFDETR", None)
+            original_load_classes = (
+                getattr(base_model_class, "_load_classes", None)
+                if base_model_class is not None
+                else None
+            )
+            if base_model_class is not None and original_load_classes is not None:
+                setattr(
+                    base_model_class,
+                    "_load_classes",
+                    staticmethod(lambda _dataset_dir: class_names),
+                )
             model_class = getattr(detr_module, model.class_name)
-            trainer = model_class(
-                pretrain_weights=str(weights_path),
-                resolution=config.image_size,
-            )
-            trainer.train(
-                dataset_dir=str(dataset_path),
-                output_dir=str(output_dir),
-                dataset_file="roboflow",
-                epochs=config.epochs,
-                batch_size=config.batch_size,
-                num_workers=config.num_workers,
-                early_stopping=config.early_stopping,
-                early_stopping_patience=config.early_stopping_patience,
-                early_stopping_min_delta=config.early_stopping_min_delta,
-                early_stopping_use_ema=config.early_stopping_use_ema,
-                progress_bar=False,
-            )
+            try:
+                trainer = model_class(
+                    pretrain_weights=str(weights_path),
+                    resolution=config.image_size,
+                )
+                trainer.train(
+                    dataset_dir=str(dataset_path),
+                    output_dir=str(output_dir),
+                    dataset_file="roboflow",
+                    epochs=config.epochs,
+                    batch_size=config.batch_size,
+                    num_workers=config.num_workers,
+                    early_stopping=config.early_stopping,
+                    early_stopping_patience=config.early_stopping_patience,
+                    early_stopping_min_delta=config.early_stopping_min_delta,
+                    early_stopping_use_ema=config.early_stopping_use_ema,
+                    progress_bar=False,
+                )
+            finally:
+                if base_model_class is not None and original_load_classes is not None:
+                    setattr(base_model_class, "_load_classes", original_load_classes)
         log_stream.flush()
     report_progress(
         callback,
