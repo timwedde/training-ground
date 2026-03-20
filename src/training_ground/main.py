@@ -1306,13 +1306,6 @@ class MainScreen(Screen[None]):
         border: round $surface;
     }
 
-    #wizard-status {
-        min-height: 3;
-        margin-top: 1;
-        padding: 0 1;
-        border: round $surface;
-    }
-
     #download-progress {
         margin-top: 1;
     }
@@ -1406,6 +1399,8 @@ class MainScreen(Screen[None]):
         self._gpu_utilization_history: deque[float] = deque(maxlen=GPU_HISTORY_LENGTH)
         self._gpu_memory_history: deque[float] = deque(maxlen=GPU_HISTORY_LENGTH)
         self._gpu_supported = shutil.which("nvidia-smi") is not None
+        self._status_message: str | None = None
+        self._status_error = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main-shell"):
@@ -1448,7 +1443,6 @@ class MainScreen(Screen[None]):
                     auto_scroll=True,
                     max_lines=TRAINING_LOG_LINES,
                 )
-            yield Static("", id="wizard-status")
             yield ProgressBar(id="download-progress")
             with Horizontal(id="status-bar"):
                 yield Static("", id="workspace-status")
@@ -2049,6 +2043,7 @@ class MainScreen(Screen[None]):
         selection.display = self._step != "training"
         step_title.update(self.render_step_title())
         step_help.update(self.render_step_help())
+        self.apply_step_help_styles(step_help)
         self.refresh_status_hints()
         self.show_training_panel(self._step == "training")
         self.refresh_choices()
@@ -2099,17 +2094,17 @@ class MainScreen(Screen[None]):
             self.set_status(message)
 
     def set_status(self, message: str, *, error: bool = False) -> None:
+        self._status_message = message
+        self._status_error = error
         try:
-            status = self.query_one("#wizard-status", Static)
+            step_help = self.query_one("#step-help", Static)
         except NoMatches:
             return
-        status.update(message)
-        if error:
-            status.styles.border = ("round", "red")
-            status.styles.color = "red"
-        else:
-            status.styles.border = ("round", "cyan")
-            status.styles.color = "white"
+        step_help.update(self.render_step_help())
+        self.apply_step_help_styles(step_help)
+
+    def apply_step_help_styles(self, widget: Static) -> None:
+        widget.styles.color = "red" if self._status_error else "white"
 
     def show_catalog_loader(self, visible: bool) -> None:
         try:
@@ -2308,39 +2303,44 @@ class MainScreen(Screen[None]):
 
     def render_step_help(self) -> str:
         if not self._session.logged_in:
-            return f"Press {AUTH_KEY} to log into Roboflow."
-        if self._catalog_loading:
-            return "Fetching projects and dataset versions in the background."
-        if self._step == "projects":
-            return "Use Up/Down to move, Enter to select. Projects without dataset versions are hidden."
-        if self._step == "versions":
-            return f"Use Up/Down to move, Enter to download as {DATASET_FORMAT_LABEL}. Press B to go back."
-        if self._step == "models":
-            return "Use Up/Down to move, Enter to fetch pretrained weights. Press B to go back."
-        if self._step == "weights" and self.weights_path is not None:
-            return (
+            base_help = f"Press {AUTH_KEY} to log into Roboflow."
+        elif self._catalog_loading:
+            base_help = "Fetching projects and dataset versions in the background."
+        elif self._step == "projects":
+            base_help = "Use Up/Down to move, Enter to select. Projects without dataset versions are hidden."
+        elif self._step == "versions":
+            base_help = f"Use Up/Down to move, Enter to download as {DATASET_FORMAT_LABEL}. Press B to go back."
+        elif self._step == "models":
+            base_help = "Use Up/Down to move, Enter to fetch pretrained weights. Press B to go back."
+        elif self._step == "weights" and self.weights_path is not None:
+            base_help = (
                 "Weights downloaded. The training configuration window will open next."
             )
-        if self._step == "config":
-            return (
+        elif self._step == "config":
+            base_help = (
                 "Adjust the training settings in the configuration window. "
                 "Press B to choose a different model size."
             )
-        if self._step == "training" and self._training_task is not None:
-            return (
+        elif self._step == "training" and self._training_task is not None:
+            base_help = (
                 "Training is active. Live logs are streamed below, and GPU charts "
                 "appear when telemetry is available. Press I for run details."
             )
-        if self._step == "training" and self.training_output_path is not None:
-            return (
+        elif self._step == "training" and self.training_output_path is not None:
+            base_help = (
                 "Training finished. Review the logs below, or press B to adjust the "
                 "configuration and train again. Press I for run details."
             )
-        if self._step == "weights":
-            return "Downloading pretrained weights for the selected RF-DETR segmentation model."
-        if self._step == "download":
-            return "Downloading the selected COCO Segmentation dataset."
-        return "Complete the current step to continue."
+        elif self._step == "weights":
+            base_help = "Downloading pretrained weights for the selected RF-DETR segmentation model."
+        elif self._step == "download":
+            base_help = "Downloading the selected COCO Segmentation dataset."
+        else:
+            base_help = "Complete the current step to continue."
+
+        if self._status_message and self._status_message != base_help:
+            return f"{base_help}\n{self._status_message}"
+        return base_help
 
 
 class TrainingGroundApp(App[None]):
