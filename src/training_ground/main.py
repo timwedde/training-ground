@@ -4,6 +4,7 @@ import questionary
 import roboflow
 import typer
 from questionary import Choice
+from rfdetr import RFDETRSegNano
 from roboflow.core.project import Project
 from roboflow.core.version import Version
 
@@ -63,8 +64,6 @@ def wizard():
 
     dataset_path = f"./datasets/{version.id}"
     version.download(model_format="coco", location=dataset_path)
-
-    from rfdetr import RFDETRSegNano
 
     model = RFDETRSegNano()
 
