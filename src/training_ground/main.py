@@ -51,6 +51,16 @@ def wizard():
         ],
     ).ask()
 
+    batch_size, grad_accum_steps = questionary.select(
+        "Select the GPU VRAM",
+        choices=[
+            Choice(title="16GB", value=(4, 4)),
+            Choice(title="24GB", value=(8, 2)),
+            Choice(title="32GB", value=(16, 1)),
+            Choice(title="40GB", value=(24, 1)),
+        ],
+    ).ask()
+
     dataset_path = f"./datasets/{version.id}"
     version.download(model_format="coco", location=dataset_path)
 
@@ -61,8 +71,8 @@ def wizard():
     model.train(
         dataset_dir=dataset_path,
         epochs=100,
-        batch_size=16,
-        grad_accum_steps=1,
+        batch_size=batch_size,
+        grad_accum_steps=grad_accum_steps,
         resolution=372,
         early_stopping=True,
         early_stopping_patience=5,
