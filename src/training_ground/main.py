@@ -77,6 +77,9 @@ def wizard():
         early_stopping_patience=5,
         eval_interval=2,
         progress_bar=True,
+        num_workers=8,
+        prefetch_factor=2,
+        persistent_workers=True,
         output_dir="runs",
     )
 
