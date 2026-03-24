@@ -63,7 +63,7 @@ def wizard():
             Choice(title="16GB", value=(8, 4)),
             Choice(title="24GB", value=(16, 2)),
             Choice(title="32GB", value=(32, 1)),
-            Choice(title="40GB", value=(48, 1)),
+            Choice(title="4RTX A6000", value=(40, 1)),
         ],
     ).ask()
 
