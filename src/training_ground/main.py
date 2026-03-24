@@ -20,6 +20,10 @@ def fetch_project_info(data):
 
 @app.command()
 def wizard():
+    import torch.multiprocessing as mp
+
+    mp.set_sharing_strategy("file_system")
+
     roboflow.login()
 
     rf = roboflow.Roboflow()
