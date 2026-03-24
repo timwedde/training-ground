@@ -59,10 +59,10 @@ def wizard():
     batch_size, grad_accum_steps = questionary.select(
         "Select the GPU VRAM",
         choices=[
-            Choice(title="16GB", value=(4, 4)),
-            Choice(title="24GB", value=(8, 2)),
-            Choice(title="32GB", value=(16, 1)),
-            Choice(title="40GB", value=(24, 1)),
+            Choice(title="16GB", value=(8, 4)),
+            Choice(title="24GB", value=(16, 2)),
+            Choice(title="32GB", value=(32, 1)),
+            Choice(title="40GB", value=(48, 1)),
         ],
     ).ask()
 
