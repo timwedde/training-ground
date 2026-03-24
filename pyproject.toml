@@ -15,6 +15,7 @@ dependencies = [
     "pycocotools>=2.0.11",
     "faster-coco-eval>=1.7.2",
     "pytorch-lightning>=2.6.1",
+    "orjson>=3.11.7",
 ]
 
 [project.scripts]

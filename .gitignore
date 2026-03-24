@@ -2,6 +2,7 @@
 datasets/
 weights/
 training_runs/
+*.pt
 
 # Python-generated files
 __pycache__/
