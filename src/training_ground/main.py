@@ -1,5 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import orjson
@@ -54,10 +54,13 @@ def analyze(dataset_path: Path):
         report_category_ids = sorted(
             category["id"]
             for category in categories
-            if category["id"] in used_category_ids or category.get("supercategory") != "none"
+            if category["id"] in used_category_ids
+            or category.get("supercategory") != "none"
         )
 
-        annotation_counts = Counter(annotation["category_id"] for annotation in annotations)
+        annotation_counts = Counter(
+            annotation["category_id"] for annotation in annotations
+        )
         image_class_sets: dict[int, set[int]] = defaultdict(set)
         for annotation in annotations:
             image_class_sets[annotation["image_id"]].add(annotation["category_id"])
@@ -89,7 +92,10 @@ def analyze(dataset_path: Path):
         typer.echo("\nAnnotation counts by class:")
         for category_id in sorted(
             report_category_ids,
-            key=lambda cid: (-annotation_counts[cid], category_names.get(cid, str(cid))),
+            key=lambda cid: (
+                -annotation_counts[cid],
+                category_names.get(cid, str(cid)),
+            ),
         ):
             typer.echo(
                 f"  - {category_names.get(category_id, str(category_id))}: "
@@ -99,7 +105,10 @@ def analyze(dataset_path: Path):
         typer.echo("\nImages containing each class:")
         for category_id in sorted(
             report_category_ids,
-            key=lambda cid: (-image_presence_counts[cid], category_names.get(cid, str(cid))),
+            key=lambda cid: (
+                -image_presence_counts[cid],
+                category_names.get(cid, str(cid)),
+            ),
         ):
             typer.echo(
                 f"  - {category_names.get(category_id, str(category_id))}: "
@@ -109,7 +118,9 @@ def analyze(dataset_path: Path):
 
         typer.echo("\nImage class combinations:")
         for class_ids, count in combination_counts.most_common():
-            class_names = sorted(category_names.get(class_id, str(class_id)) for class_id in class_ids)
+            class_names = sorted(
+                category_names.get(class_id, str(class_id)) for class_id in class_ids
+            )
             typer.echo(
                 f"  - {', '.join(class_names)}: {count} images ({percent(count, len(images))})"
             )
@@ -163,10 +174,7 @@ def analyze(dataset_path: Path):
 
             typer.echo(
                 f"  - {class_name}: "
-                + ", ".join(
-                    f"{label}={weight * 100:.1f}%"
-                    for label, weight in weights
-                )
+                + ", ".join(f"{label}={weight * 100:.1f}%" for label, weight in weights)
                 + f" | spread={spread * 100:.1f}pp | {status}"
             )
             if status == "WARNING":
@@ -179,7 +187,9 @@ def analyze(dataset_path: Path):
         typer.echo(f"No COCO annotation files found under: {dataset_path}")
         raise typer.Exit(code=1)
 
-    typer.echo(f"Analyzing {len(annotation_files)} annotation file(s) from {dataset_path}")
+    typer.echo(
+        f"Analyzing {len(annotation_files)} annotation file(s) from {dataset_path}"
+    )
     for annotation_path in annotation_files:
         print_report(annotation_path)
     print_split_comparison()
@@ -189,6 +199,7 @@ def analyze(dataset_path: Path):
 def wizard():
     import questionary
     import roboflow
+
     # fix torch multiprocessing sharing strategy
     import torch.multiprocessing as mp
     from questionary import Choice
@@ -251,7 +262,7 @@ def wizard():
         grad_accum_steps=grad_accum_steps,
         resolution=372,
         early_stopping=True,
-        early_stopping_patience=5,
+        early_stopping_patience=3,
         progress_bar=True,
         num_workers=8,
         prefetch_factor=2,
