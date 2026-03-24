@@ -1,3 +1,4 @@
+import csv
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,6 +14,256 @@ def fetch_project_info(data):
     project = workspace.project(project_id)
     versions = project.versions()
     return project, versions
+
+
+def _parse_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+
+    return float(stripped)
+
+
+def _best_row(
+    rows: list[dict[str, float]], metric: str, maximize: bool = True
+) -> dict[str, float] | None:
+    candidates = [row for row in rows if row.get(metric) is not None]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: row[metric]) if maximize else min(
+        candidates, key=lambda row: row[metric]
+    )
+
+
+@app.command()
+def metrics(
+    metrics_path: Path = typer.Argument(..., exists=True, dir_okay=False),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to write generated plots to. Defaults to a sibling folder.",
+    ),
+):
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    if output_dir is None:
+        output_dir = metrics_path.parent / f"{metrics_path.stem}_plots"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    train_rows: list[dict[str, float]] = []
+    val_rows: list[dict[str, float]] = []
+    lr_rows: list[dict[str, float]] = []
+
+    with metrics_path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+
+        for raw_row in reader:
+            row = {name: _parse_float(raw_row.get(name)) for name in fieldnames}
+            step = row.get("step")
+            epoch = row.get("epoch")
+            if step is None or epoch is None:
+                continue
+
+            row["step"] = int(step)
+            row["epoch"] = int(epoch)
+
+            if row.get("train/loss") is not None:
+                train_rows.append(row)
+            if any(row.get(metric) is not None for metric in ("val/mAP_50", "val/loss")):
+                val_rows.append(row)
+            if row.get("train/lr") is not None:
+                lr_rows.append(row)
+
+    if not any((train_rows, val_rows, lr_rows)):
+        typer.echo(f"No plottable metrics found in {metrics_path}")
+        raise typer.Exit(code=1)
+
+    def add_series(
+        fig,
+        row_index: int,
+        col_index: int,
+        rows: list[dict[str, float]],
+        metrics_to_plot: list[str],
+    ) -> bool:
+        plotted = False
+        for metric in metrics_to_plot:
+            points = [
+                (row["step"], row[metric])
+                for row in rows
+                if row.get(metric) is not None
+            ]
+            if not points:
+                continue
+            xs, ys = zip(*points, strict=False)
+            fig.add_trace(
+                go.Scatter(
+                    x=list(xs),
+                    y=list(ys),
+                    mode="lines+markers",
+                    name=metric,
+                    legendgroup=metric,
+                ),
+                row=row_index,
+                col=col_index,
+            )
+            plotted = True
+        return plotted
+
+    summary_fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=(
+            "Training losses",
+            "Validation overview",
+            "Validation quality",
+            "Learning rate",
+        ),
+    )
+    training_plotted = add_series(
+        summary_fig,
+        1,
+        1,
+        train_rows,
+        ["train/loss", "train/loss_ce", "train/loss_bbox", "train/loss_giou"],
+    )
+    validation_overview_plotted = add_series(
+        summary_fig,
+        1,
+        2,
+        val_rows,
+        ["val/loss", "val/mAP_50", "val/mAP_50_95", "val/F1"],
+    )
+    validation_quality_plotted = add_series(
+        summary_fig,
+        2,
+        1,
+        val_rows,
+        [
+            "val/precision",
+            "val/recall",
+            "val/mAR",
+            "val/ema_mAP_50",
+            "val/ema_mAP_50_95",
+        ],
+    )
+    lr_plotted = add_series(
+        summary_fig,
+        2,
+        2,
+        lr_rows,
+        ["train/lr", "train/lr_max", "train/lr_min"],
+    )
+    for index, plotted in enumerate(
+        (
+            training_plotted,
+            validation_overview_plotted,
+            validation_quality_plotted,
+            lr_plotted,
+        ),
+        start=1,
+    ):
+        row_index = 1 if index <= 2 else 2
+        col_index = 1 if index in (1, 3) else 2
+        summary_fig.update_xaxes(title_text="step", row=row_index, col=col_index)
+        if not plotted:
+            summary_fig.add_annotation(
+                x=0.5,
+                y=0.5,
+                xref=f"x{index} domain",
+                yref=f"y{index} domain",
+                text="No data",
+                showarrow=False,
+            )
+
+    summary_fig.update_layout(
+        height=900,
+        width=1400,
+        template="plotly_white",
+        hovermode="x unified",
+    )
+    summary_path = output_dir / "training_summary.html"
+    summary_fig.write_html(summary_path, include_plotlyjs="cdn")
+
+    per_class_metrics = sorted(
+        name for name in fieldnames if name.startswith("val/AP/")
+    )
+    per_class_path = None
+    if per_class_metrics and val_rows:
+        per_class_fig = go.Figure()
+        for metric in per_class_metrics:
+            points = [
+                (row["step"], row[metric])
+                for row in val_rows
+                if row.get(metric) is not None
+            ]
+            if not points:
+                continue
+            xs, ys = zip(*points, strict=False)
+            per_class_fig.add_trace(
+                go.Scatter(
+                    x=list(xs),
+                    y=list(ys),
+                    mode="lines+markers",
+                    name=metric,
+                )
+            )
+
+        per_class_fig.update_layout(
+            title="Per-class AP",
+            xaxis_title="step",
+            yaxis_title="value",
+            height=600,
+            width=1400,
+            template="plotly_white",
+            hovermode="x unified",
+        )
+        per_class_path = output_dir / "per_class_ap.html"
+        per_class_fig.write_html(per_class_path, include_plotlyjs="cdn")
+
+    best_map50 = _best_row(val_rows, "val/mAP_50")
+    best_ema_map50 = _best_row(val_rows, "val/ema_mAP_50")
+    best_f1 = _best_row(val_rows, "val/F1")
+    lowest_val_loss = _best_row(val_rows, "val/loss", maximize=False)
+    final_train = max(train_rows, key=lambda row: row["step"]) if train_rows else None
+
+    typer.echo(f"Analyzed metrics from {metrics_path}")
+    typer.echo(f"Plots written to {output_dir}")
+    typer.echo(f"  - {summary_path.name}")
+    if per_class_path is not None:
+        typer.echo(f"  - {per_class_path.name}")
+
+    typer.echo("\nValidation highlights:")
+    if best_map50 is not None:
+        typer.echo(
+            f"  - best val/mAP_50: {best_map50['val/mAP_50']:.4f} "
+            f"(epoch {best_map50['epoch']}, step {best_map50['step']})"
+        )
+    if best_ema_map50 is not None:
+        typer.echo(
+            f"  - best val/ema_mAP_50: {best_ema_map50['val/ema_mAP_50']:.4f} "
+            f"(epoch {best_ema_map50['epoch']}, step {best_ema_map50['step']})"
+        )
+    if best_f1 is not None:
+        typer.echo(
+            f"  - best val/F1: {best_f1['val/F1']:.4f} "
+            f"(epoch {best_f1['epoch']}, step {best_f1['step']})"
+        )
+    if lowest_val_loss is not None:
+        typer.echo(
+            f"  - lowest val/loss: {lowest_val_loss['val/loss']:.4f} "
+            f"(epoch {lowest_val_loss['epoch']}, step {lowest_val_loss['step']})"
+        )
+    if final_train is not None and final_train.get("train/loss") is not None:
+        typer.echo(
+            f"  - final train/loss: {final_train['train/loss']:.4f} "
+            f"(epoch {final_train['epoch']}, step {final_train['step']})"
+        )
 
 
 @app.command()
