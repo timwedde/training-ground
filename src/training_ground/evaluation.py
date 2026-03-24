@@ -107,6 +107,87 @@ def render_overlay(
     annotated.save(output_path, quality=OVERLAY_QUALITY)
 
 
+def render_fp_overlay(
+    image_path: Path,
+    output_path: Path,
+    fp_items: list,
+    class_name: str,
+):
+    """Render overlay showing only false positive predictions for a specific class."""
+    color = (231, 76, 60)  # Red for false positives
+    image = Image.open(image_path).convert("RGB")
+    image_array = np.asarray(image).copy()
+
+    def blend_mask(mask, alpha=OVERLAY_ALPHA):
+        if mask is None:
+            return
+        mask_indices = mask.astype(bool)
+        if not mask_indices.any():
+            return
+        image_array[mask_indices] = (
+            image_array[mask_indices] * (1 - alpha) + np.array(color) * alpha
+        ).astype("uint8")
+
+    for item in fp_items:
+        blend_mask(item.get("mask"))
+
+    annotated = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(annotated)
+
+    for item in fp_items:
+        box = item["bbox"]
+        label = f"FP {item['class_name']} {item['score']:.2f}"
+        draw.rectangle(box, outline=color, width=3)
+        draw.text((box[0] + 4, box[1] + 4), label, fill=color)
+
+    summary = f"False Positives for '{class_name}' - Count: {len(fp_items)}"
+    draw.rectangle((0, 0, annotated.width, 24), fill=(0, 0, 0))
+    draw.text((8, 5), summary, fill=(255, 255, 255))
+    annotated.save(output_path, quality=OVERLAY_QUALITY)
+
+
+def render_fn_overlay(
+    image_path: Path,
+    output_path: Path,
+    fn_items: list,
+    class_name: str,
+):
+    """Render overlay showing only false negative ground truth for a specific class."""
+    color = (46, 204, 113)  # Green for false negatives (missed GT)
+    image = Image.open(image_path).convert("RGB")
+    image_array = np.asarray(image).copy()
+
+    def blend_mask(mask, alpha=OVERLAY_ALPHA):
+        if mask is None:
+            return
+        mask_indices = mask.astype(bool)
+        if not mask_indices.any():
+            return
+        image_array[mask_indices] = (
+            image_array[mask_indices] * (1 - alpha) + np.array(color) * alpha
+        ).astype("uint8")
+
+    for item in fn_items:
+        blend_mask(item.get("mask"))
+
+    annotated = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(annotated)
+
+    for item in fn_items:
+        box = item["bbox"]
+        draw.rectangle(box, outline=color, width=3)
+        draw.text(
+            (box[0] + 4, max(4, box[1] - 16)),
+            f"FN {item['class_name']}",
+            fill=color,
+        )
+
+    summary = f"False Negatives for '{class_name}' - Count: {len(fn_items)}"
+    draw.rectangle((0, 0, annotated.width, 24), fill=(0, 0, 0))
+    draw.text((8, 5), summary, fill=(255, 255, 255))
+    annotated.save(output_path, quality=OVERLAY_QUALITY)
+
+
 def write_csv(output_path: Path, rows: list[dict]):
     if not rows:
         output_path.write_text("")
@@ -179,6 +260,12 @@ def run_evaluation(
     overlays_dir = output_dir / "overlays"
     overlays_dir.mkdir(parents=True, exist_ok=True)
 
+    # Create directories for false positive and false negative overlays per class
+    false_positives_dir = output_dir / "false_positives"
+    false_negatives_dir = output_dir / "false_negatives"
+    false_positives_dir.mkdir(parents=True, exist_ok=True)
+    false_negatives_dir.mkdir(parents=True, exist_ok=True)
+
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     checkpoint_head_size = int(checkpoint["model"]["class_embed.bias"].shape[0])
     dataset_label_count = len(categories)
@@ -206,6 +293,8 @@ def run_evaluation(
             "fn": 0,
             "matched_iou_sum": 0.0,
             "matched_iou_count": 0,
+            "fp_payloads": [],  # Track false positive images per class
+            "fn_payloads": [],  # Track false negative images per class
         }
         for category in categories
     }
@@ -282,6 +371,11 @@ def run_evaluation(
             true_positives = 0
             false_positives = 0
 
+            # Track FP items per class for this image
+            fp_items_per_class: dict[int, list] = {
+                cat_id: [] for cat_id in per_class_counts
+            }
+
             for pred_item in sorted(
                 pred_items, key=lambda item: item["score"], reverse=True
             ):
@@ -316,6 +410,8 @@ def run_evaluation(
                     false_positives += 1
                     counts["fp"] += 1
                     match_status = "fp"
+                    # Track this FP item for the class
+                    fp_items_per_class[pred_item["category_id"]].append(pred_item)
 
                 prediction_rows.append(
                     {
@@ -330,10 +426,16 @@ def run_evaluation(
                 )
 
             false_negatives = 0
+            # Track FN items per class for this image
+            fn_items_per_class: dict[int, list] = {
+                cat_id: [] for cat_id in per_class_counts
+            }
             for gt_index, gt_item in enumerate(gt_items):
                 if gt_index not in gt_matched:
                     false_negatives += 1
                     per_class_counts[gt_item["category_id"]]["fn"] += 1
+                    # Track this FN item for the class
+                    fn_items_per_class[gt_item["category_id"]].append(gt_item)
 
             precision, recall, f1 = compute_metrics(
                 true_positives, false_positives, false_negatives
@@ -365,6 +467,26 @@ def run_evaluation(
                     **per_image_rows[-1],
                 }
             )
+
+            # Track FP and FN payloads per class for generating class-specific overlays
+            for category_id, fp_items in fp_items_per_class.items():
+                if fp_items:
+                    per_class_counts[category_id]["fp_payloads"].append(
+                        {
+                            "image_path": image_path,
+                            "file_name": image_record["file_name"],
+                            "fp_items": fp_items,
+                        }
+                    )
+            for category_id, fn_items in fn_items_per_class.items():
+                if fn_items:
+                    per_class_counts[category_id]["fn_payloads"].append(
+                        {
+                            "image_path": image_path,
+                            "file_name": image_record["file_name"],
+                            "fn_items": fn_items,
+                        }
+                    )
 
     coco_gt = COCO(str(annotation_path))
     coco_metrics = {
@@ -409,6 +531,62 @@ def run_evaluation(
             item["pred_items"],
             summary,
         )
+
+    # Generate false positive overlays per class
+    typer.echo(f"Generating false positive overlays per class...")
+    for category in categories:
+        category_id = category["id"]
+        class_name = category["name"]
+        counts = per_class_counts[category_id]
+
+        if not counts["fp_payloads"]:
+            continue
+
+        # Create class-specific subdirectory
+        class_fp_dir = false_positives_dir / class_name.replace(" ", "_")
+        class_fp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save up to max_overlay_images per class, sorted by number of FPs (descending)
+        fp_payloads_sorted = sorted(
+            counts["fp_payloads"], key=lambda x: len(x["fp_items"]), reverse=True
+        )[:max_overlay_images]
+
+        for payload in fp_payloads_sorted:
+            output_filename = f"{Path(payload['file_name']).stem}_fp.jpg"
+            render_fp_overlay(
+                payload["image_path"],
+                class_fp_dir / output_filename,
+                payload["fp_items"],
+                class_name,
+            )
+
+    # Generate false negative overlays per class
+    typer.echo(f"Generating false negative overlays per class...")
+    for category in categories:
+        category_id = category["id"]
+        class_name = category["name"]
+        counts = per_class_counts[category_id]
+
+        if not counts["fn_payloads"]:
+            continue
+
+        # Create class-specific subdirectory
+        class_fn_dir = false_negatives_dir / class_name.replace(" ", "_")
+        class_fn_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save up to max_overlay_images per class, sorted by number of FNs (descending)
+        fn_payloads_sorted = sorted(
+            counts["fn_payloads"], key=lambda x: len(x["fn_items"]), reverse=True
+        )[:max_overlay_images]
+
+        for payload in fn_payloads_sorted:
+            output_filename = f"{Path(payload['file_name']).stem}_fn.jpg"
+            render_fn_overlay(
+                payload["image_path"],
+                class_fn_dir / output_filename,
+                payload["fn_items"],
+                class_name,
+            )
 
     write_csv(output_dir / "per_image_metrics.csv", per_image_rows)
     write_csv(output_dir / "prediction_metrics.csv", prediction_rows)
