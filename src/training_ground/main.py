@@ -20,7 +20,7 @@ def fetch_project_info(data):
 
 @app.command()
 def wizard():
-    # roboflow.login()
+    roboflow.login()
 
     rf = roboflow.Roboflow()
 
