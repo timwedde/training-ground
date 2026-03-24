@@ -80,6 +80,7 @@ def wizard():
         num_workers=8,
         prefetch_factor=2,
         persistent_workers=True,
+        pin_memory=False,
         output_dir="runs",
     )
 
