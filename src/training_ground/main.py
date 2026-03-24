@@ -20,6 +20,7 @@ def fetch_project_info(data):
 
 @app.command()
 def wizard():
+    # fix torch multiprocessing sharing strategy
     import torch.multiprocessing as mp
 
     mp.set_sharing_strategy("file_system")
