@@ -80,7 +80,6 @@ def wizard():
         resolution=372,
         early_stopping=True,
         early_stopping_patience=5,
-        eval_interval=2,
         progress_bar=True,
         num_workers=8,
         prefetch_factor=2,
