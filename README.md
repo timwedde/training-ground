@@ -11,5 +11,5 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### Run the tool
 
 ```bash
-uv tool install --from git+https://github.com/timwedde/training-ground.git@feat/cli training-ground
+uv tool install --from git+https://github.com/timwedde/training-ground.git training-ground
 ```
