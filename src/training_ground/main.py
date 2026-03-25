@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import typer
@@ -5,6 +6,7 @@ import typer
 from .analysis import analyze_dataset
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
+from .upload import upload_training_run
 from .wizard import run_wizard
 
 app = typer.Typer()
@@ -82,6 +84,42 @@ def analyze(dataset_path: Path):
 @app.command()
 def wizard():
     run_wizard()
+
+
+@app.command()
+def upload(
+    runs_dir: Path = typer.Argument(
+        ..., exists=True, file_okay=False, help="Training runs directory."
+    ),
+):
+    checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
+    checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
+    metrics_path = runs_dir / "metrics.csv"
+    eval_dir = runs_dir / "checkpoint_best_ema_test_evaluation"
+
+    if not checkpoint_ema.exists():
+        typer.echo(f"EMA checkpoint not found: {checkpoint_ema}", err=True)
+        raise typer.Exit(code=1)
+    if not checkpoint_regular.exists():
+        typer.echo(f"Regular checkpoint not found: {checkpoint_regular}", err=True)
+        raise typer.Exit(code=1)
+    if not metrics_path.exists():
+        typer.echo(f"Metrics file not found: {metrics_path}", err=True)
+        raise typer.Exit(code=1)
+    if not eval_dir.exists():
+        typer.echo(f"Evaluation directory not found: {eval_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    run_id = asyncio.run(
+        upload_training_run(
+            runs_dir=runs_dir,
+            checkpoint_ema_path=checkpoint_ema,
+            checkpoint_regular_path=checkpoint_regular,
+            metrics_path=metrics_path,
+            eval_dir=eval_dir,
+        )
+    )
+    typer.echo(f"Upload complete: run ID {run_id}")
 
 
 if __name__ == "__main__":

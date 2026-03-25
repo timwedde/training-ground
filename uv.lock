@@ -2146,6 +2146,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "faster-coco-eval" },
+    { name = "httpx" },
     { name = "orjson" },
     { name = "plotly" },
     { name = "pycocotools" },
@@ -2159,6 +2160,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "faster-coco-eval", specifier = ">=1.7.2" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "orjson", specifier = ">=3.11.7" },
     { name = "plotly", specifier = ">=6.3.1" },
     { name = "pycocotools", specifier = ">=2.0.11" },
