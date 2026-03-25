@@ -17,11 +17,6 @@ def resolve_annotation_files(path: Path) -> list[Path]:
     if direct.exists():
         return [direct]
 
-    for split in ("train", "valid", "test"):
-        candidate = path / split / "_annotations.coco.json"
-        if candidate.exists():
-            return [candidate]
-
     return sorted(path.rglob("_annotations.coco.json"))
 
 
