@@ -132,6 +132,7 @@ async def upload_training_run(
     checkpoint_regular_path: Path,
     metrics_path: Path,
     eval_dir: Path,
+    onnx_path: Path,
 ) -> int:
     typer.echo("\n📦 Preparing artifacts for upload...")
 
@@ -145,6 +146,7 @@ async def upload_training_run(
         "checkpoint_best_regular.pth",
         "metrics.csv",
         "evaluation_artifacts.zip",
+        "model.onnx",
     ]
 
     local_paths = {
@@ -152,6 +154,7 @@ async def upload_training_run(
         "checkpoint_best_regular.pth": checkpoint_regular_path,
         "metrics.csv": metrics_path,
         "evaluation_artifacts.zip": zip_path,
+        "model.onnx": onnx_path,
     }
 
     # Get signed URLs from object-ledger

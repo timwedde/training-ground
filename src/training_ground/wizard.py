@@ -88,6 +88,14 @@ def run_wizard():
 
     runs_dir = Path("runs")
 
+    # Export model to ONNX (required)
+    typer.echo("\n📦 Exporting model to ONNX format...")
+    model.export(simplify=True)
+    onnx_path = runs_dir / "model.onnx"
+    if not onnx_path.exists():
+        raise RuntimeError(f"ONNX export did not produce expected file: {onnx_path}")
+    typer.echo("  ✓ ONNX export complete")
+
     # Generate metrics plots
     typer.echo("\n📊 Generating training metrics plots...")
     metrics_path = runs_dir / "metrics.csv"
@@ -134,6 +142,7 @@ def run_wizard():
                     checkpoint_regular_path=checkpoint_regular,
                     metrics_path=metrics_path,
                     eval_dir=eval_dir,
+                    onnx_path=onnx_path,
                 )
             )
             typer.echo(
