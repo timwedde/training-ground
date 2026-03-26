@@ -60,7 +60,7 @@ def run_wizard():
     # Import here to avoid slow startup when just using other CLI commands
     from rfdetr.detr import RFDETRSegNano
 
-    model = RFDETRSegNano()
+    model = RFDETRSegNano(resolution=372)
     try:
         model.train(
             dataset_dir=dataset_path,
