@@ -2,8 +2,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import questionary
-import roboflow
-import torch.multiprocessing as mp
 import typer
 from questionary import Choice
 
@@ -19,7 +17,11 @@ def fetch_project_info(data):
 
 
 def run_wizard():
+    import roboflow
+    import torch.multiprocessing as mp
+
     mp.set_sharing_strategy("file_system")
+
     roboflow.login()
     rf = roboflow.Roboflow()
 

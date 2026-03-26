@@ -6,7 +6,6 @@ import faster_coco_eval
 
 faster_coco_eval.init_as_pycocotools()
 import numpy as np
-import torch
 import typer
 from PIL import Image, ImageDraw
 from pycocotools.coco import COCO  # noqa: E402
@@ -210,6 +209,7 @@ def run_evaluation(
     max_overlay_images: int,
     limit: int | None,
 ) -> Path:
+    import torch
     from rfdetr.detr import (
         RFDETRBase,
         RFDETRLarge,
