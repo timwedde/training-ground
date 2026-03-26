@@ -5,11 +5,17 @@
 ### Install `uv`
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### Run the tool
+### Install the Tool
 
 ```bash
 uv tool install --from git+https://github.com/timwedde/training-ground.git training-ground
+```
+
+### Run the Tool
+
+```bash
+training-ground --help
 ```
