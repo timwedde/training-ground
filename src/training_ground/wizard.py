@@ -1,9 +1,39 @@
+import math
+import struct
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import onnx
+import onnx.helper
 import questionary
 import typer
 from questionary import Choice
+
+
+# patch ONNX export
+def _float32_to_bfloat16(fval: float, truncate: bool = False) -> int:
+    """
+    Converts a float32 value to a bfloat16 (as int).
+    Restores compatibility for onnx-graphsurgeon.
+    """
+    # ival is the integer representation of the float32 bits
+    ival = int.from_bytes(struct.pack("<f", fval), "little")
+
+    if truncate:
+        return ival >> 16
+
+    # NaN requires at least 1 significand bit set
+    if math.isnan(fval):
+        return 0x7FC0  # sign=0, exp=all-ones, sig=0b1000000
+
+    # Drop bottom 16-bits and round remaining bits using round-to-nearest-even
+    rounded = ((ival >> 16) & 1) + 0x7FFF
+    return (ival + rounded) >> 16
+
+
+# Check if the function is missing and inject it
+if not hasattr(onnx.helper, "float32_to_bfloat16"):
+    onnx.helper.float32_to_bfloat16 = _float32_to_bfloat16
 
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
@@ -18,13 +48,11 @@ def fetch_project_info(data):
 
 def run_wizard():
     import roboflow
-    import torch.multiprocessing as mp
-
-    mp.set_sharing_strategy("file_system")
 
     roboflow.login()
     rf = roboflow.Roboflow()
 
+    typer.echo("Fetching projects...")
     workspace = rf.workspace()
     projects = []
     with ThreadPoolExecutor() as executor:
@@ -37,17 +65,17 @@ def run_wizard():
     projects.sort(key=lambda p: p[0].updated, reverse=True)
 
     project, versions = questionary.select(
-        "Select your project",
+        "Select project",
         choices=[Choice(title=p.id, value=(p, v)) for p, v in projects],
     ).ask()
 
     version = questionary.select(
-        "Select the dataset version",
+        "Select dataset version",
         choices=[Choice(title=v.id.split("/")[-1], value=v) for v in versions],
     ).ask()
 
     batch_size, grad_accum_steps = questionary.select(
-        "Select the GPU VRAM",
+        "Select GPU VRAM",
         choices=[
             Choice(title="RTX  4080 (16GB)", value=(16, 1)),
             Choice(title="RTX  4090 (24GB)", value=(32, 1)),
@@ -59,104 +87,82 @@ def run_wizard():
     dataset_path = f"./datasets/{version.id}"
     version.download(model_format="coco", location=dataset_path)
 
-    # Import here to avoid slow startup when just using other CLI commands
+    import torch.multiprocessing as mp
+
+    mp.set_sharing_strategy("file_system")
     from rfdetr.detr import RFDETRSegNano
 
     model = RFDETRSegNano(resolution=372)
-    try:
-        model.train(
-            dataset_dir=dataset_path,
-            epochs=100,
-            batch_size=batch_size,
-            grad_accum_steps=grad_accum_steps,
-            resolution=372,
-            early_stopping=True,
-            early_stopping_patience=3,
-            progress_bar=True,
-            num_workers=8,
-            prefetch_factor=2,
-            persistent_workers=True,
-            pin_memory=False,
-            num_queries=50,
-            num_select=20,
-            output_dir="runs",
-        )
-    except Exception as e:
-        typer.echo(f"\n❌ Training failed: {e}", err=True)
-        raise
-
-    # Training completed successfully - proceed with metrics, evaluation, and upload
-    typer.echo("\n✅ Training completed successfully!")
+    model.train(
+        dataset_dir=dataset_path,
+        epochs=100,
+        batch_size=batch_size,
+        grad_accum_steps=grad_accum_steps,
+        resolution=372,
+        early_stopping=True,
+        early_stopping_patience=3,
+        progress_bar=True,
+        num_workers=8,
+        prefetch_factor=2,
+        persistent_workers=True,
+        pin_memory=False,
+        num_queries=50,
+        num_select=20,
+        output_dir="runs",
+    )
 
     runs_dir = Path("runs")
 
-    # Export model to ONNX (required)
-    typer.echo("\n📦 Exporting model to ONNX format...")
-    model.export(simplify=True)
-    onnx_path = runs_dir / "model.onnx"
+    typer.echo("Exporting model to ONNX...")
+    model.export(output_path=str(runs_dir))
+    onnx_path = runs_dir / "inference_model.onnx"
     if not onnx_path.exists():
         raise RuntimeError(f"ONNX export did not produce expected file: {onnx_path}")
-    typer.echo("  ✓ ONNX export complete")
 
-    # Generate metrics plots
-    typer.echo("\n📊 Generating training metrics plots...")
+    from onnxsim import simplify
+
+    typer.echo("Simplifying ONNX model...")
+    model = onnx.load(onnx_path)
+
+    model_simp, check = simplify(model)
+
+    assert check, "Simplified ONNX model could not be validated"
+
+    onnx.save(model_simp, onnx_path)
+
+    typer.echo("ONNX export complete")
+
+    typer.echo("Generating training metrics plots...")
     metrics_path = runs_dir / "metrics.csv"
-    try:
-        plot_training_metrics(metrics_path, runs_dir / "metrics_plots")
-        typer.echo("  ✓ Metrics plots generated")
-    except Exception as e:
-        typer.echo(f"  ⚠️  Warning: Failed to generate metrics plots: {e}")
+    plot_training_metrics(metrics_path, runs_dir / "metrics_plots")
 
-    # Run evaluation on best EMA checkpoint
-    typer.echo("\n🔍 Running evaluation on best EMA checkpoint...")
+    typer.echo("Running evaluation on best EMA checkpoint...")
     checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
-    try:
-        run_evaluation(
-            checkpoint_path=checkpoint_ema,
-            dataset_path=Path(dataset_path),
-            split="test",
-            output_dir=None,
-            model_type="rfdetr-seg-nano",
-            resolution=372,
-            threshold=0.25,
-            iou_threshold=0.5,
-            max_overlay_images=100,
-            limit=None,
+    run_evaluation(
+        checkpoint_path=checkpoint_ema,
+        dataset_path=Path(dataset_path),
+        split="test",
+        output_dir=None,
+        model_type="rfdetr-seg-nano",
+        resolution=372,
+        threshold=0.25,
+        iou_threshold=0.5,
+        max_overlay_images=100,
+        limit=None,
+    )
+    eval_dir = runs_dir / f"{checkpoint_ema.stem}_test_evaluation"
+
+    typer.echo("Preparing to upload training run to GCS...")
+    import asyncio
+
+    run_id = asyncio.run(
+        upload_training_run(
+            runs_dir=runs_dir,
+            checkpoint_ema_path=checkpoint_ema,
+            checkpoint_regular_path=runs_dir / "checkpoint_best_regular.pth",
+            metrics_path=metrics_path,
+            eval_dir=eval_dir,
+            onnx_path=onnx_path,
         )
-        typer.echo("  ✓ Evaluation complete")
-        eval_dir = runs_dir / f"{checkpoint_ema.stem}_test_evaluation"
-    except Exception as e:
-        typer.echo(f"  ⚠️  Warning: Evaluation failed: {e}")
-        eval_dir = None
-
-    # Upload to GCS if evaluation succeeded
-    if eval_dir and eval_dir.exists():
-        typer.echo("\n☁️  Preparing to upload training run to GCS...")
-        try:
-            import asyncio
-
-            checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
-
-            run_id = asyncio.run(
-                upload_training_run(
-                    runs_dir=runs_dir,
-                    checkpoint_ema_path=checkpoint_ema,
-                    checkpoint_regular_path=checkpoint_regular,
-                    metrics_path=metrics_path,
-                    eval_dir=eval_dir,
-                    onnx_path=onnx_path,
-                )
-            )
-            typer.echo(
-                f"\n🎉 Training run {run_id} complete and uploaded successfully!"
-            )
-        except Exception as e:
-            typer.echo(f"\n❌ Upload failed: {e}", err=True)
-            typer.echo(
-                "   Your training artifacts are still available locally in the 'runs/' directory."
-            )
-    else:
-        typer.echo("\n⚠️  Skipping upload - evaluation did not produce output.")
-        typer.echo(
-            "   Your training artifacts are available locally in the 'runs/' directory."
-        )
+    )
+    typer.echo(f"Training run {run_id} complete and uploaded successfully")
