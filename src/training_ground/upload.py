@@ -35,7 +35,7 @@ async def upload_file_chunked(
     file_size = local_path.stat().st_size
 
     if progress:
-        typer.echo(f"  Uploading {artifact_name} ({file_size / 1024 / 1024:.1f} MB)...")
+        typer.echo(f"Uploading {artifact_name} ({file_size / 1024 / 1024:.1f} MB)...")
 
     # For large files, use chunked upload
     if file_size > CHUNK_SIZE:
@@ -46,7 +46,7 @@ async def upload_file_chunked(
         await _upload_small_file(signed_url, local_path, artifact_name, progress)
 
     if progress:
-        typer.echo(f"  ✓ {artifact_name} uploaded successfully")
+        typer.echo(f"{artifact_name} uploaded successfully")
 
 
 async def _upload_small_file(
@@ -113,7 +113,7 @@ async def upload_artifacts(
 
 def zip_directory(source_dir: Path, zip_path: Path, progress: bool = True) -> None:
     if progress:
-        typer.echo(f"  Zipping {source_dir.name}...")
+        typer.echo(f"Zipping {source_dir.name}...")
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for file_path in source_dir.rglob("*"):
@@ -123,7 +123,7 @@ def zip_directory(source_dir: Path, zip_path: Path, progress: bool = True) -> No
 
     if progress:
         zip_size = zip_path.stat().st_size
-        typer.echo(f"  ✓ Created {zip_path.name} ({zip_size / 1024 / 1024:.1f} MB)")
+        typer.echo(f"Created {zip_path.name} ({zip_size / 1024 / 1024:.1f} MB)")
 
 
 async def upload_training_run(
@@ -134,7 +134,7 @@ async def upload_training_run(
     eval_dir: Path,
     onnx_path: Path,
 ) -> int:
-    typer.echo("\n📦 Preparing artifacts for upload...")
+    typer.echo("Preparing artifacts for upload...")
 
     # Create zip file for evaluation artifacts
     zip_path = runs_dir / "evaluation_artifacts.zip"
@@ -158,22 +158,22 @@ async def upload_training_run(
     }
 
     # Get signed URLs from object-ledger
-    typer.echo("\n🔑 Requesting upload URLs from object-ledger...")
+    typer.echo("Requesting upload URLs from object-ledger...")
     try:
         run_id, urls = await get_signed_urls(artifacts)
-        typer.echo(f"  ✓ Assigned run ID: {run_id}")
+        typer.echo(f"Assigned run ID: {run_id}")
     except httpx.HTTPError as e:
-        typer.echo(f"  ✗ Failed to get signed URLs: {e}", err=True)
+        typer.echo(f"Failed to get signed URLs: {e}", err=True)
         raise
 
     # Upload all artifacts in parallel
-    typer.echo(f"\n☁️  Uploading {len(artifacts)} artifacts to GCS...")
+    typer.echo(f"Uploading {len(artifacts)} artifacts to GCS...")
     await upload_artifacts(urls, local_paths)
 
     # Cleanup zip file
     zip_path.unlink()
 
-    typer.echo(f"\n✅ Successfully uploaded run {run_id} to GCS!")
-    typer.echo(f"   Location: stm-ai-bucket/training_ground/runs/{run_id}/")
+    typer.echo(f"Successfully uploaded run {run_id} to GCS!")
+    typer.echo(f"Location: stm-ai-bucket/training_ground/runs/{run_id}/")
 
     return run_id

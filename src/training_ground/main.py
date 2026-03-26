@@ -96,6 +96,7 @@ def upload(
     checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
     metrics_path = runs_dir / "metrics.csv"
     eval_dir = runs_dir / "checkpoint_best_ema_test_evaluation"
+    onnx_path = runs_dir / "inference_model.onnx"
 
     if not checkpoint_ema.exists():
         typer.echo(f"EMA checkpoint not found: {checkpoint_ema}", err=True)
@@ -109,6 +110,9 @@ def upload(
     if not eval_dir.exists():
         typer.echo(f"Evaluation directory not found: {eval_dir}", err=True)
         raise typer.Exit(code=1)
+    if not onnx_path.exists():
+        typer.echo(f"ONNX model not found: {onnx_path}", err=True)
+        raise typer.Exit(code=1)
 
     run_id = asyncio.run(
         upload_training_run(
@@ -117,6 +121,7 @@ def upload(
             checkpoint_regular_path=checkpoint_regular,
             metrics_path=metrics_path,
             eval_dir=eval_dir,
+            onnx_path=onnx_path,
         )
     )
     typer.echo(f"Upload complete: run ID {run_id}")

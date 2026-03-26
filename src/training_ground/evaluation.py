@@ -533,7 +533,7 @@ def run_evaluation(
         )
 
     # Generate false positive overlays per class
-    typer.echo(f"Generating false positive overlays per class...")
+    typer.echo("Generating false positive overlays per class...")
     for category in categories:
         category_id = category["id"]
         class_name = category["name"]
@@ -561,7 +561,7 @@ def run_evaluation(
             )
 
     # Generate false negative overlays per class
-    typer.echo(f"Generating false negative overlays per class...")
+    typer.echo("Generating false negative overlays per class...")
     for category in categories:
         category_id = category["id"]
         class_name = category["name"]
