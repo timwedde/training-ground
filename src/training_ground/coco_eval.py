@@ -13,6 +13,8 @@ def run_coco_eval(coco_gt, results: list[dict], iou_type: str) -> dict[str, obje
         return {
             "stats": None,
             "per_class_ap50": {},
+            "per_class_ap75": {},
+            "per_class_ap95": {},
             "per_class_ap": {},
         }
 
@@ -27,9 +29,13 @@ def run_coco_eval(coco_gt, results: list[dict], iou_type: str) -> dict[str, obje
     precision = evaluator.eval["precision"]
     iou_thresholds = evaluator.params.iouThrs
     ap50_index = int(np.argmin(np.abs(iou_thresholds - 0.5)))
+    ap75_index = int(np.argmin(np.abs(iou_thresholds - 0.75)))
+    ap95_index = int(np.argmin(np.abs(iou_thresholds - 0.95)))
 
     per_class_ap = {}
     per_class_ap50 = {}
+    per_class_ap75 = {}
+    per_class_ap95 = {}
     for category_index, category_id in enumerate(evaluator.params.catIds):
         class_precision = precision[:, :, category_index, 0, -1]
         class_precision = class_precision[class_precision > -1]
@@ -44,8 +50,22 @@ def run_coco_eval(coco_gt, results: list[dict], iou_type: str) -> dict[str, obje
             float(class_precision_ap50.mean()) if class_precision_ap50.size else 0.0
         )
 
+        class_precision_ap75 = precision[ap75_index, :, category_index, 0, -1]
+        class_precision_ap75 = class_precision_ap75[class_precision_ap75 > -1]
+        per_class_ap75[category_id] = (
+            float(class_precision_ap75.mean()) if class_precision_ap75.size else 0.0
+        )
+
+        class_precision_ap95 = precision[ap95_index, :, category_index, 0, -1]
+        class_precision_ap95 = class_precision_ap95[class_precision_ap95 > -1]
+        per_class_ap95[category_id] = (
+            float(class_precision_ap95.mean()) if class_precision_ap95.size else 0.0
+        )
+
     return {
         "stats": [float(value) for value in evaluator.stats.tolist()],
         "per_class_ap50": per_class_ap50,
+        "per_class_ap75": per_class_ap75,
+        "per_class_ap95": per_class_ap95,
         "per_class_ap": per_class_ap,
     }

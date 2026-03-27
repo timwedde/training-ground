@@ -148,36 +148,42 @@ def _write_coco_metrics(
 
     class_names = [row["class_name"] for row in per_class_rows]
     for col_index, (metric_name, metrics) in enumerate(valid_metrics, start=1):
-        fig.add_trace(
-            go.Bar(
-                x=class_names,
-                y=[
-                    metrics["per_class_ap"].get(row["category_id"], 0.0)
-                    for row in per_class_rows
-                ],
-                name=f"{metric_name} AP",
-            ),
-            row=1,
-            col=col_index,
-        )
-        fig.add_trace(
-            go.Bar(
-                x=class_names,
-                y=[
-                    metrics["per_class_ap50"].get(row["category_id"], 0.0)
-                    for row in per_class_rows
-                ],
-                name=f"{metric_name} AP50",
-            ),
-            row=1,
-            col=col_index,
-        )
+        metric_series = [
+            ("AP", "per_class_ap"),
+            ("AP50", "per_class_ap50"),
+            ("AP75", "per_class_ap75"),
+            ("AP95", "per_class_ap95"),
+        ]
+        for label, metric_key in metric_series:
+            fig.add_trace(
+                go.Bar(
+                    x=class_names,
+                    y=[
+                        metrics.get(metric_key, {}).get(row["category_id"], 0.0)
+                        for row in per_class_rows
+                    ],
+                    name=f"{metric_name} {label}",
+                ),
+                row=1,
+                col=col_index,
+            )
 
     fig.update_layout(
+        title={
+            "text": (
+                "COCO per-class AP metrics"
+                "<br><sup>"
+                "AP = mean over IoU 0.50-0.95 | "
+                "AP50 = IoU 0.50 | "
+                "AP75 = IoU 0.75 | "
+                "AP95 = IoU 0.95 (strictest overlap match)"
+                "</sup>"
+            )
+        },
         barmode="group",
         template="plotly_white",
         hovermode="x unified",
-        height=550,
+        height=620,
         width=max(900, 600 * len(valid_metrics)),
     )
     fig.write_html(plots_dir / "coco_metrics.html", include_plotlyjs="cdn")
