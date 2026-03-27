@@ -203,7 +203,6 @@ def run_evaluation(
     split: str,
     threshold: float,
     iou_threshold: float,
-    max_overlay_images: int,
 ) -> Path:
     import torch
     from rfdetr.detr import (
@@ -513,7 +512,7 @@ def run_evaluation(
 
     per_image_rows.sort(key=score_image)
     overlay_payloads.sort(key=score_image)
-    for item in overlay_payloads[:max_overlay_images]:
+    for item in overlay_payloads:
         summary = (
             f"F1 {item['f1']:.2f} | P {item['precision']:.2f} | R {item['recall']:.2f} | "
             f"TP {item['true_positives']} FP {item['false_positives']} FN {item['false_negatives']}"
@@ -543,7 +542,7 @@ def run_evaluation(
         # Save up to max_overlay_images per class, sorted by number of FPs (descending)
         fp_payloads_sorted = sorted(
             counts["fp_payloads"], key=lambda x: len(x["fp_items"]), reverse=True
-        )[:max_overlay_images]
+        )
 
         for payload in fp_payloads_sorted:
             output_filename = f"{Path(payload['file_name']).stem}_fp.jpg"
@@ -571,7 +570,7 @@ def run_evaluation(
         # Save up to max_overlay_images per class, sorted by number of FNs (descending)
         fn_payloads_sorted = sorted(
             counts["fn_payloads"], key=lambda x: len(x["fn_items"]), reverse=True
-        )[:max_overlay_images]
+        )
 
         for payload in fn_payloads_sorted:
             output_filename = f"{Path(payload['file_name']).stem}_fn.jpg"

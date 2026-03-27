@@ -54,11 +54,8 @@ def evaluate(
         "runs/checkpoint_best_ema.pth", exists=True, dir_okay=False
     ),
     split: str = typer.Option("test", help="Dataset split: train, valid, or test."),
-    threshold: float = typer.Option(0.25, help="Prediction confidence threshold."),
+    threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
     iou_threshold: float = typer.Option(0.5, help="IoU threshold for TP/FP matching."),
-    max_overlay_images: int = typer.Option(
-        100, help="Max overlay images to save (worst first)."
-    ),
 ):
     """
     Evaluate a model checkpoint on a dataset split.
@@ -69,7 +66,6 @@ def evaluate(
         split=split,
         threshold=threshold,
         iou_threshold=iou_threshold,
-        max_overlay_images=max_overlay_images,
     )
 
     typer.echo("Evaluation complete. Artifacts written to {output_dir}")
