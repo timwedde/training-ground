@@ -24,11 +24,8 @@ def parse_float(value: str | None) -> float | None:
     return float(stripped) if stripped else None
 
 
-def plot_training_metrics(
-    metrics_path: Path, output_dir: Path | None
-) -> tuple[Path, Path | None]:
-    if output_dir is None:
-        output_dir = metrics_path.parent / f"{metrics_path.stem}_plots"
+def plot_training_metrics(metrics_path: Path) -> tuple[Path, Path | None]:
+    output_dir = metrics_path.parent / f"{metrics_path.stem}_plots"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     train_rows: list[dict] = []

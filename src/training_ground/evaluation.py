@@ -198,16 +198,12 @@ def write_csv(output_path: Path, rows: list[dict]):
 
 
 def run_evaluation(
-    checkpoint_path: Path,
     dataset_path: Path,
+    checkpoint_path: Path,
     split: str,
-    output_dir: Path | None,
-    model_type: str,
-    resolution: int,
     threshold: float,
     iou_threshold: float,
     max_overlay_images: int,
-    limit: int | None,
 ) -> Path:
     import torch
     from rfdetr.detr import (
@@ -239,6 +235,8 @@ def run_evaluation(
         "rfdetr-seg-xlarge": RFDETRSegXLarge,
         "rfdetr-seg-2xlarge": RFDETRSeg2XLarge,
     }
+
+    model_type = "rfdetr-seg-nano"
     model_class = model_registry.get(model_type)
     if model_class is None:
         valid_models = ", ".join(sorted(model_registry))
@@ -251,11 +249,9 @@ def run_evaluation(
         load_coco_annotations(annotation_path)
     )
 
-    if output_dir is None:
-        output_dir = (
-            checkpoint_path.parent
-            / f"{checkpoint_path.stem}_{split_dir.name}_evaluation"
-        )
+    output_dir = (
+        checkpoint_path.parent / f"{checkpoint_path.stem}_{split_dir.name}_evaluation"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     overlays_dir = output_dir / "overlays"
     overlays_dir.mkdir(parents=True, exist_ok=True)
@@ -274,12 +270,10 @@ def run_evaluation(
             f"Checkpoint has more class slots than dataset; restricting to first {dataset_label_count}."
         )
 
-    model = model_class(pretrain_weights=str(checkpoint_path), resolution=resolution)
+    model = model_class(pretrain_weights=str(checkpoint_path), resolution=372)
     category_names = {category["id"]: category["name"] for category in categories}
 
     image_records = [images_by_id[image_id] for image_id in sorted(images_by_id)]
-    if limit is not None:
-        image_records = image_records[:limit]
 
     bbox_results: list[dict] = []
     segm_results: list[dict] = []

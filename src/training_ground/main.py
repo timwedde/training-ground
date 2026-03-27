@@ -13,58 +13,63 @@ app = typer.Typer()
 
 
 @app.command()
+def wizard():
+    """
+    Complete a full training run.
+    """
+    run_wizard()
+
+
+@app.command()
 def metrics(
-    metrics_path: Path = typer.Argument(..., exists=True, dir_okay=False),
-    output_dir: Path | None = typer.Option(
-        None, "--output-dir", "-o", help="Directory for generated plots."
+    metrics_path: Path = typer.Argument(
+        "runs/metrics.csv", exists=True, dir_okay=False
     ),
 ):
+    """
+    Analyze and plot training metrics from a CSV file.
+    """
     typer.echo(f"Analyzed metrics from {metrics_path}")
 
-    try:
-        plots_dir, per_class_path = plot_training_metrics(metrics_path, output_dir)
-    except ValueError as e:
-        typer.echo(str(e))
-        raise typer.Exit(code=1)
+    plots_dir, per_class_path = plot_training_metrics(metrics_path)
 
     typer.echo(f"Plots written to {plots_dir}")
     typer.echo("  - training_summary.html")
     if per_class_path:
         typer.echo(f"  - {per_class_path.name}")
 
-    typer.echo("\nValidation highlights:")
+
+@app.command()
+def analyze(dataset_path: Path):
+    """
+    Analyze a dataset and print summary statistics.
+    """
+    analyze_dataset(dataset_path)
 
 
 @app.command()
 def evaluate(
-    checkpoint_path: Path = typer.Argument(..., exists=True, dir_okay=False),
     dataset_path: Path = typer.Argument(..., exists=True, file_okay=False),
-    split: str = typer.Option("test", help="Dataset split: train, valid, or test."),
-    output_dir: Path | None = typer.Option(
-        None, "--output-dir", "-o", help="Output directory."
+    checkpoint_path: Path = typer.Argument(
+        "runs/checkpoint_best_ema.pth", exists=True, dir_okay=False
     ),
-    model_type: str = typer.Option("rfdetr-seg-nano", help="Model architecture."),
-    resolution: int = typer.Option(372, help="Inference resolution."),
+    split: str = typer.Option("test", help="Dataset split: train, valid, or test."),
     threshold: float = typer.Option(0.25, help="Prediction confidence threshold."),
     iou_threshold: float = typer.Option(0.5, help="IoU threshold for TP/FP matching."),
     max_overlay_images: int = typer.Option(
         100, help="Max overlay images to save (worst first)."
     ),
-    limit: int | None = typer.Option(
-        None, help="Cap images to evaluate for debugging."
-    ),
 ):
+    """
+    Evaluate a model checkpoint on a dataset split.
+    """
     run_evaluation(
-        checkpoint_path=checkpoint_path,
         dataset_path=dataset_path,
+        checkpoint_path=checkpoint_path,
         split=split,
-        output_dir=output_dir,
-        model_type=model_type,
-        resolution=resolution,
         threshold=threshold,
         iou_threshold=iou_threshold,
         max_overlay_images=max_overlay_images,
-        limit=limit,
     )
 
     typer.echo("Evaluation complete. Artifacts written to {output_dir}")
@@ -77,21 +82,14 @@ def evaluate(
 
 
 @app.command()
-def analyze(dataset_path: Path):
-    analyze_dataset(dataset_path)
-
-
-@app.command()
-def wizard():
-    run_wizard()
-
-
-@app.command()
 def upload(
     runs_dir: Path = typer.Argument(
-        ..., exists=True, file_okay=False, help="Training runs directory."
+        "runs", exists=True, file_okay=False, help="Training runs directory."
     ),
 ):
+    """
+    Upload a training run to GCP.
+    """
     checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
     checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
     metrics_path = runs_dir / "metrics.csv"
