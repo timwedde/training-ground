@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import faster_coco_eval
+from rfdetr.detr import RFDETR
 
 faster_coco_eval.init_as_pycocotools()
 import numpy as np
@@ -203,8 +204,8 @@ def run_evaluation(
     split: str,
     threshold: float,
     iou_threshold: float,
+    model: RFDETR | None = None,
 ) -> Path:
-    import torch
     from rfdetr.detr import (
         RFDETRBase,
         RFDETRLarge,
@@ -261,15 +262,12 @@ def run_evaluation(
     false_positives_dir.mkdir(parents=True, exist_ok=True)
     false_negatives_dir.mkdir(parents=True, exist_ok=True)
 
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    checkpoint_head_size = int(checkpoint["model"]["class_embed.bias"].shape[0])
-    dataset_label_count = len(categories)
-    if checkpoint_head_size > dataset_label_count:
-        typer.echo(
-            f"Checkpoint has more class slots than dataset; restricting to first {dataset_label_count}."
-        )
+    if model is None:
+        typer.echo(f"Loading model from checkpoint: {checkpoint_path}")
+        model = model_class(pretrain_weights=str(checkpoint_path), resolution=372)
 
-    model = model_class(pretrain_weights=str(checkpoint_path), resolution=372)
+    model.optimize_for_inference()
+
     category_names = {category["id"]: category["name"] for category in categories}
 
     image_records = [images_by_id[image_id] for image_id in sorted(images_by_id)]
@@ -304,9 +302,6 @@ def run_evaluation(
             pred_items = []
             for index in range(len(detections)):
                 class_id = int(detections.class_id[index])
-                if class_id >= dataset_label_count:
-                    continue
-
                 mapped_category_id = label_to_category_id[class_id]
                 bbox_xyxy = [float(v) for v in detections.xyxy[index].tolist()]
                 score = float(detections.confidence[index])

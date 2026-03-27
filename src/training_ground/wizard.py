@@ -122,19 +122,19 @@ def run_wizard():
     from onnxsim import simplify
 
     typer.echo("Simplifying ONNX model...")
-    model = onnx.load(onnx_path)
+    onnx_model = onnx.load(onnx_path)
 
-    model_simp, check = simplify(model)
+    onnx_model_simp, check = simplify(onnx_model)
 
     assert check, "Simplified ONNX model could not be validated"
 
-    onnx.save(model_simp, onnx_path)
+    onnx.save(onnx_model_simp, onnx_path)
 
     typer.echo("ONNX export complete")
 
     typer.echo("Generating training metrics plots...")
     metrics_path = runs_dir / "metrics.csv"
-    plot_training_metrics(metrics_path, runs_dir / "metrics_plots")
+    plot_training_metrics(metrics_path)
 
     typer.echo("Running evaluation on best EMA checkpoint...")
     checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
@@ -142,13 +142,9 @@ def run_wizard():
         checkpoint_path=checkpoint_ema,
         dataset_path=Path(dataset_path),
         split="test",
-        output_dir=None,
-        model_type="rfdetr-seg-nano",
-        resolution=372,
-        threshold=0.25,
+        threshold=0.5,
         iou_threshold=0.5,
-        max_overlay_images=100,
-        limit=None,
+        model=model,
     )
     eval_dir = runs_dir / f"{checkpoint_ema.stem}_test_evaluation"
 
