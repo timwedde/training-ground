@@ -74,15 +74,27 @@ def run_wizard():
         choices=[Choice(title=v.id.split("/")[-1], value=v) for v in versions],
     ).ask()
 
-    batch_size, grad_accum_steps = questionary.select(
+    batch_size_selection = questionary.select(
         "Select GPU VRAM",
         choices=[
             Choice(title="RTX  4080 (16GB)", value=(16, 1)),
             Choice(title="RTX  4090 (24GB)", value=(32, 1)),
             Choice(title="RTX  5090 (32GB)", value=(48, 1)),
             Choice(title="RTX A6000 (48GB)", value=(64, 1)),
+            Choice(title="Custom", value="custom"),
         ],
     ).ask()
+
+    if batch_size_selection == "custom":
+        batch_size = int(
+            questionary.text(
+                "Enter custom batch size",
+                validate=lambda value: value.isdigit() and int(value) > 0,
+            ).ask()
+        )
+        grad_accum_steps = 1
+    else:
+        batch_size, grad_accum_steps = batch_size_selection
 
     dataset_path = f"./datasets/{version.id}"
     version.download(model_format="coco", location=dataset_path)
