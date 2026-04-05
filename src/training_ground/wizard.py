@@ -80,7 +80,7 @@ def run_wizard():
             Choice(title="RTX  4080 (16GB)", value=(16, 1)),
             Choice(title="RTX  4090 (24GB)", value=(32, 1)),
             Choice(title="RTX  5090 (32GB)", value=(48, 1)),
-            Choice(title="RTX A6000 (48GB)", value=(68, 1)),
+            Choice(title="RTX A6000 (48GB)", value=(64, 1)),
         ],
     ).ask()
 
