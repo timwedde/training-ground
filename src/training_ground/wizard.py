@@ -126,7 +126,7 @@ def run_wizard():
     runs_dir = Path("runs")
 
     typer.echo("Exporting model to ONNX...")
-    model.export(output_path=str(runs_dir))
+    model.export(output_dir=str(runs_dir))
     onnx_path = runs_dir / "inference_model.onnx"
     if not onnx_path.exists():
         raise RuntimeError(f"ONNX export did not produce expected file: {onnx_path}")
