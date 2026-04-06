@@ -4,7 +4,7 @@ from pathlib import Path
 import typer
 
 from .analysis import analyze_dataset
-from .evaluation import run_evaluation
+from .evaluation import run_evaluation, run_prediction_directory
 from .metrics_plotting import plot_training_metrics
 from .upload import upload_training_run
 from .wizard import run_wizard
@@ -75,6 +75,37 @@ def evaluate(
     typer.echo("  - prediction_metrics.csv")
     typer.echo("  - per_class_metrics.csv")
     typer.echo("  - summary.json")
+
+
+@app.command("predict-dir")
+def predict_dir(
+    input_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    output_dir: Path = typer.Argument(..., file_okay=False),
+    checkpoint_path: Path = typer.Option(
+        "runs/checkpoint_best_ema.pth",
+        exists=True,
+        dir_okay=False,
+        help="Model checkpoint path.",
+    ),
+    threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
+):
+    """
+    Run predictions on every image in a directory tree.
+    """
+    result = run_prediction_directory(
+        input_dir=input_dir,
+        checkpoint_path=checkpoint_path,
+        output_dir=output_dir,
+        threshold=threshold,
+    )
+
+    typer.echo(
+        f"Prediction complete. Wrote {result['image_count']} files to {output_dir}"
+    )
+    if result["fallback_count"]:
+        typer.echo(
+            f"{result['fallback_count']} files were saved as .png because the original format was not writable"
+        )
 
 
 @app.command()

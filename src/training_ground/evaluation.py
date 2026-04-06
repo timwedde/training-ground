@@ -1,6 +1,7 @@
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 import faster_coco_eval
 from rfdetr.detr import RFDETR
@@ -18,6 +19,17 @@ from .geometry import bbox_iou, mask_iou, xywh_to_xyxy, xyxy_to_xywh
 
 OVERLAY_ALPHA = 0.28
 OVERLAY_QUALITY = 92
+SUMMARY_BAR_HEIGHT = 24
+DEFAULT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".avif", ".webp"}
+
+
+def create_model(checkpoint_path: Path) -> RFDETR:
+    from rfdetr.detr import RFDETRSegNano
+
+    typer.echo(f"Loading model from checkpoint: {checkpoint_path}")
+    model = RFDETRSegNano(pretrain_weights=str(checkpoint_path), resolution=372)
+    model.optimize_for_inference()
+    return model
 
 
 def resolve_dataset_split(dataset_path: Path, split: str) -> tuple[Path, Path]:
@@ -58,6 +70,32 @@ def score_image(row: dict) -> tuple:
     )
 
 
+def draw_box_label(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[float, float],
+    text: str,
+    fill: tuple[int, int, int],
+):
+    left, top, right, bottom = draw.textbbox(position, text)
+    padding = 2
+    background = (
+        left - padding,
+        top - padding,
+        right + padding,
+        bottom + padding,
+    )
+    draw.rectangle(background, fill=fill)
+    draw.text(position, text, fill=(255, 255, 255))
+
+
+def label_y_inside_box(box: list[float]) -> float:
+    return max(SUMMARY_BAR_HEIGHT + 4, box[1] + 4)
+
+
+def label_y_above_box(box: list[float]) -> float:
+    return max(SUMMARY_BAR_HEIGHT + 4, box[1] - 16)
+
+
 def render_overlay(
     image_path: Path,
     output_path: Path,
@@ -90,21 +128,68 @@ def render_overlay(
     for item in gt_items:
         box = item["bbox"]
         draw.rectangle(box, outline=colors["gt"], width=3)
-        draw.text(
-            (box[0] + 4, max(4, box[1] - 16)),
+        draw_box_label(
+            draw,
+            (box[0] + 4, label_y_above_box(box)),
             f"GT {item['class_name']}",
-            fill=colors["gt"],
+            colors["gt"],
         )
 
     for item in pred_items:
         box = item["bbox"]
-        label = f"P {item['class_name']} {item['score']:.2f}"
+        label = f"{item['class_name']} {item['score']:.2f}"
         draw.rectangle(box, outline=colors["pred"], width=3)
-        draw.text((box[0] + 4, box[1] + 4), label, fill=colors["pred"])
+        draw_box_label(
+            draw, (box[0] + 4, label_y_inside_box(box)), label, colors["pred"]
+        )
 
-    draw.rectangle((0, 0, annotated.width, 24), fill=(0, 0, 0))
+    draw.rectangle((0, 0, annotated.width, SUMMARY_BAR_HEIGHT), fill=(0, 0, 0))
     draw.text((8, 5), summary_text, fill=(255, 255, 255))
     annotated.save(output_path, quality=OVERLAY_QUALITY)
+
+
+def render_prediction_overlay(
+    image_path: Path,
+    output_path: Path,
+    pred_items: list,
+    summary_text: str,
+) -> Path:
+    color = (231, 76, 60)
+    image = Image.open(image_path).convert("RGB")
+    image_array = np.asarray(image).copy()
+
+    def blend_mask(mask, alpha=OVERLAY_ALPHA):
+        if mask is None:
+            return
+        mask_indices = mask.astype(bool)
+        if not mask_indices.any():
+            return
+        image_array[mask_indices] = (
+            image_array[mask_indices] * (1 - alpha) + np.array(color) * alpha
+        ).astype("uint8")
+
+    for item in pred_items:
+        blend_mask(item.get("mask"))
+
+    annotated = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(annotated)
+
+    for item in pred_items:
+        box = item["bbox"]
+        label = f"{item['class_name']} {item['score']:.2f}"
+        draw.rectangle(box, outline=color, width=3)
+        draw_box_label(draw, (box[0] + 4, label_y_inside_box(box)), label, color)
+
+    draw.rectangle((0, 0, annotated.width, SUMMARY_BAR_HEIGHT), fill=(0, 0, 0))
+    draw.text((8, 5), summary_text, fill=(255, 255, 255))
+
+    try:
+        annotated.save(output_path, quality=OVERLAY_QUALITY)
+        return output_path
+    except OSError:
+        fallback_path = output_path.with_suffix(".png")
+        annotated.save(fallback_path)
+        return fallback_path
 
 
 def render_fp_overlay(
@@ -138,10 +223,10 @@ def render_fp_overlay(
         box = item["bbox"]
         label = f"FP {item['class_name']} {item['score']:.2f}"
         draw.rectangle(box, outline=color, width=3)
-        draw.text((box[0] + 4, box[1] + 4), label, fill=color)
+        draw_box_label(draw, (box[0] + 4, label_y_inside_box(box)), label, color)
 
     summary = f"False Positives for '{class_name}' - Count: {len(fp_items)}"
-    draw.rectangle((0, 0, annotated.width, 24), fill=(0, 0, 0))
+    draw.rectangle((0, 0, annotated.width, SUMMARY_BAR_HEIGHT), fill=(0, 0, 0))
     draw.text((8, 5), summary, fill=(255, 255, 255))
     annotated.save(output_path, quality=OVERLAY_QUALITY)
 
@@ -176,14 +261,15 @@ def render_fn_overlay(
     for item in fn_items:
         box = item["bbox"]
         draw.rectangle(box, outline=color, width=3)
-        draw.text(
-            (box[0] + 4, max(4, box[1] - 16)),
+        draw_box_label(
+            draw,
+            (box[0] + 4, label_y_above_box(box)),
             f"FN {item['class_name']}",
-            fill=color,
+            color,
         )
 
     summary = f"False Negatives for '{class_name}' - Count: {len(fn_items)}"
-    draw.rectangle((0, 0, annotated.width, 24), fill=(0, 0, 0))
+    draw.rectangle((0, 0, annotated.width, SUMMARY_BAR_HEIGHT), fill=(0, 0, 0))
     draw.text((8, 5), summary, fill=(255, 255, 255))
     annotated.save(output_path, quality=OVERLAY_QUALITY)
 
@@ -198,6 +284,99 @@ def write_csv(output_path: Path, rows: list[dict]):
         writer.writerows(rows)
 
 
+def iter_image_paths(input_dir: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in input_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in DEFAULT_IMAGE_SUFFIXES
+    )
+
+
+def build_pred_items(
+    detections: Any,
+    category_names: dict[int, str],
+    label_to_category_id: dict[int, int],
+) -> list[dict]:
+    pred_items = []
+    for index in range(len(detections)):
+        class_id = int(detections.class_id[index])
+        mapped_category_id = label_to_category_id.get(class_id, class_id)
+        bbox_xyxy = [float(v) for v in detections.xyxy[index].tolist()]
+        score = float(detections.confidence[index])
+        mask = (
+            detections.mask[index].astype(bool) if detections.mask is not None else None
+        )
+        pred_items.append(
+            {
+                "prediction_index": index,
+                "category_id": mapped_category_id,
+                "class_name": category_names.get(
+                    mapped_category_id, f"class_{class_id}"
+                ),
+                "bbox": bbox_xyxy,
+                "score": score,
+                "mask": mask,
+            }
+        )
+    return pred_items
+
+
+def run_prediction_directory(
+    input_dir: Path,
+    checkpoint_path: Path,
+    output_dir: Path,
+    threshold: float,
+) -> dict:
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise typer.BadParameter(f"Input directory does not exist: {input_dir}")
+
+    image_paths = iter_image_paths(input_dir)
+    if not image_paths:
+        raise typer.BadParameter(
+            "No supported images found. Expected JPEG, PNG, AVIF, or WEBP files."
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model = create_model(checkpoint_path)
+
+    category_names = {
+        index: str(name)
+        for index, name in enumerate(getattr(model, "class_names", []) or [])
+    }
+    label_to_category_id = {index: index for index in category_names}
+
+    fallback_count = 0
+    saved_paths: list[Path] = []
+
+    typer.echo(f"Running inference on {len(image_paths)} images from {input_dir}")
+    with typer.progressbar(image_paths, label="Running inference") as progress:
+        for image_path in progress:
+            relative_path = image_path.relative_to(input_dir)
+            requested_output_path = output_dir / relative_path
+            requested_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            detections = model.predict(str(image_path), threshold=threshold)
+            pred_items = build_pred_items(
+                detections, category_names, label_to_category_id
+            )
+            saved_path = render_prediction_overlay(
+                image_path=image_path,
+                output_path=requested_output_path,
+                pred_items=pred_items,
+                summary_text=f"Predictions: {len(pred_items)} | threshold {threshold:.2f}",
+            )
+            if saved_path != requested_output_path:
+                fallback_count += 1
+            saved_paths.append(saved_path)
+
+    return {
+        "image_count": len(image_paths),
+        "saved_paths": saved_paths,
+        "output_dir": output_dir,
+        "fallback_count": fallback_count,
+    }
+
+
 def run_evaluation(
     dataset_path: Path,
     checkpoint_path: Path,
@@ -206,44 +385,6 @@ def run_evaluation(
     iou_threshold: float,
     model: RFDETR | None = None,
 ) -> Path:
-    from rfdetr.detr import (
-        RFDETRBase,
-        RFDETRLarge,
-        RFDETRMedium,
-        RFDETRNano,
-        RFDETRSeg2XLarge,
-        RFDETRSegLarge,
-        RFDETRSegMedium,
-        RFDETRSegNano,
-        RFDETRSegPreview,
-        RFDETRSegSmall,
-        RFDETRSegXLarge,
-        RFDETRSmall,
-    )
-
-    model_registry = {
-        "rfdetr-base": RFDETRBase,
-        "rfdetr-nano": RFDETRNano,
-        "rfdetr-small": RFDETRSmall,
-        "rfdetr-medium": RFDETRMedium,
-        "rfdetr-large": RFDETRLarge,
-        "rfdetr-seg-preview": RFDETRSegPreview,
-        "rfdetr-seg-nano": RFDETRSegNano,
-        "rfdetr-seg-small": RFDETRSegSmall,
-        "rfdetr-seg-medium": RFDETRSegMedium,
-        "rfdetr-seg-large": RFDETRSegLarge,
-        "rfdetr-seg-xlarge": RFDETRSegXLarge,
-        "rfdetr-seg-2xlarge": RFDETRSeg2XLarge,
-    }
-
-    model_type = "rfdetr-seg-nano"
-    model_class = model_registry.get(model_type)
-    if model_class is None:
-        valid_models = ", ".join(sorted(model_registry))
-        raise typer.BadParameter(
-            f"Unsupported model type '{model_type}'. Expected one of: {valid_models}"
-        )
-
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
     images_by_id, annotations_by_image, categories, label_to_category_id, _ = (
         load_coco_annotations(annotation_path)
@@ -263,10 +404,10 @@ def run_evaluation(
     false_negatives_dir.mkdir(parents=True, exist_ok=True)
 
     if model is None:
-        typer.echo(f"Loading model from checkpoint: {checkpoint_path}")
-        model = model_class(pretrain_weights=str(checkpoint_path), resolution=372)
-
-    model.optimize_for_inference()
+        model = create_model(checkpoint_path)
+    else:
+        model.optimize_for_inference()
+    assert model is not None
 
     category_names = {category["id"]: category["name"] for category in categories}
 
@@ -299,42 +440,27 @@ def run_evaluation(
             gt_annotations = annotations_by_image.get(image_id, [])
             detections = model.predict(str(image_path), threshold=threshold)
 
-            pred_items = []
-            for index in range(len(detections)):
-                class_id = int(detections.class_id[index])
-                mapped_category_id = label_to_category_id[class_id]
-                bbox_xyxy = [float(v) for v in detections.xyxy[index].tolist()]
-                score = float(detections.confidence[index])
-                mask = (
-                    detections.mask[index].astype(bool)
-                    if detections.mask is not None
-                    else None
-                )
-                pred_items.append(
-                    {
-                        "prediction_index": index,
-                        "category_id": mapped_category_id,
-                        "class_name": category_names[mapped_category_id],
-                        "bbox": bbox_xyxy,
-                        "score": score,
-                        "mask": mask,
-                    }
-                )
+            pred_items = build_pred_items(
+                detections=detections,
+                category_names=category_names,
+                label_to_category_id=label_to_category_id,
+            )
+            for item in pred_items:
                 bbox_results.append(
                     {
                         "image_id": image_id,
-                        "category_id": mapped_category_id,
-                        "bbox": xyxy_to_xywh(bbox_xyxy),
-                        "score": score,
+                        "category_id": item["category_id"],
+                        "bbox": xyxy_to_xywh(item["bbox"]),
+                        "score": item["score"],
                     }
                 )
-                if mask is not None:
+                if item["mask"] is not None:
                     segm_results.append(
                         {
                             "image_id": image_id,
-                            "category_id": mapped_category_id,
-                            "segmentation": encode_binary_mask(mask),
-                            "score": score,
+                            "category_id": item["category_id"],
+                            "segmentation": encode_binary_mask(item["mask"]),
+                            "score": item["score"],
                         }
                     )
 
