@@ -21,6 +21,12 @@ OVERLAY_ALPHA = 0.28
 OVERLAY_QUALITY = 92
 SUMMARY_BAR_HEIGHT = 24
 DEFAULT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".avif", ".webp"}
+DEFAULT_PRED_COLOR = (231, 76, 60)
+CLASS_PRED_COLORS = {
+    "trees": (46, 204, 113),
+    "poles": (155, 89, 182),
+    "sticks": (231, 76, 60),
+}
 
 
 def create_model(checkpoint_path: Path) -> RFDETR:
@@ -96,6 +102,10 @@ def label_y_above_box(box: list[float]) -> float:
     return max(SUMMARY_BAR_HEIGHT + 4, box[1] - 16)
 
 
+def pred_color_for_class(class_name: str) -> tuple[int, int, int]:
+    return CLASS_PRED_COLORS.get(class_name.lower(), DEFAULT_PRED_COLOR)
+
+
 def render_overlay(
     image_path: Path,
     output_path: Path,
@@ -103,7 +113,7 @@ def render_overlay(
     pred_items: list,
     summary_text: str,
 ):
-    colors = {"gt": (46, 204, 113), "pred": (231, 76, 60)}
+    colors = {"gt": (46, 204, 113), "pred": DEFAULT_PRED_COLOR}
     image = Image.open(image_path).convert("RGB")
     image_array = np.asarray(image).copy()
 
@@ -120,7 +130,7 @@ def render_overlay(
     for item in gt_items:
         blend_mask(item.get("mask"), colors["gt"])
     for item in pred_items:
-        blend_mask(item.get("mask"), colors["pred"])
+        blend_mask(item.get("mask"), pred_color_for_class(item["class_name"]))
 
     annotated = Image.fromarray(image_array)
     draw = ImageDraw.Draw(annotated)
@@ -138,10 +148,9 @@ def render_overlay(
     for item in pred_items:
         box = item["bbox"]
         label = f"{item['class_name']} {item['score']:.2f}"
-        draw.rectangle(box, outline=colors["pred"], width=3)
-        draw_box_label(
-            draw, (box[0] + 4, label_y_inside_box(box)), label, colors["pred"]
-        )
+        pred_color = pred_color_for_class(item["class_name"])
+        draw.rectangle(box, outline=pred_color, width=3)
+        draw_box_label(draw, (box[0] + 4, label_y_inside_box(box)), label, pred_color)
 
     draw.rectangle((0, 0, annotated.width, SUMMARY_BAR_HEIGHT), fill=(0, 0, 0))
     draw.text((8, 5), summary_text, fill=(255, 255, 255))
@@ -154,11 +163,10 @@ def render_prediction_overlay(
     pred_items: list,
     summary_text: str,
 ) -> Path:
-    color = (231, 76, 60)
     image = Image.open(image_path).convert("RGB")
     image_array = np.asarray(image).copy()
 
-    def blend_mask(mask, alpha=OVERLAY_ALPHA):
+    def blend_mask(mask, color, alpha=OVERLAY_ALPHA):
         if mask is None:
             return
         mask_indices = mask.astype(bool)
@@ -169,7 +177,7 @@ def render_prediction_overlay(
         ).astype("uint8")
 
     for item in pred_items:
-        blend_mask(item.get("mask"))
+        blend_mask(item.get("mask"), pred_color_for_class(item["class_name"]))
 
     annotated = Image.fromarray(image_array)
     draw = ImageDraw.Draw(annotated)
@@ -177,8 +185,9 @@ def render_prediction_overlay(
     for item in pred_items:
         box = item["bbox"]
         label = f"{item['class_name']} {item['score']:.2f}"
-        draw.rectangle(box, outline=color, width=3)
-        draw_box_label(draw, (box[0] + 4, label_y_inside_box(box)), label, color)
+        pred_color = pred_color_for_class(item["class_name"])
+        draw.rectangle(box, outline=pred_color, width=3)
+        draw_box_label(draw, (box[0] + 4, label_y_inside_box(box)), label, pred_color)
 
     draw.rectangle((0, 0, annotated.width, SUMMARY_BAR_HEIGHT), fill=(0, 0, 0))
     draw.text((8, 5), summary_text, fill=(255, 255, 255))
