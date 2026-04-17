@@ -59,7 +59,7 @@ def run_wizard():
     typer.echo("Fetching projects...")
     workspace = rf.workspace()
     projects = []
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor() as executor:
         for project, versions in executor.map(
             fetch_project_info,
             [(workspace, project.split("/")[-1]) for project in workspace.projects()],
