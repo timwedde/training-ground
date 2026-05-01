@@ -1,4 +1,6 @@
 import asyncio
+import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -14,19 +16,58 @@ API_KEY = "98SMkwyMFU6Z6Obd3K5/o5H/cJ19Nj7uj+ddHI+i1hY="
 CHUNK_SIZE = 32 * 1024 * 1024  # 32MB chunks for large files
 MAX_CONCURRENT_UPLOADS = 8
 UPLOAD_TIMEOUT = 900  # 15 minutes per file
+UPLOAD_METADATA_FILENAME = "upload_metadata.json"
 
 
-async def get_signed_urls(artifacts: List[str]) -> Tuple[int, Dict[str, str]]:
+def slugify_dataset_name(dataset_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", dataset_name.strip().lower()).strip("-")
+    if not slug:
+        raise ValueError("Dataset name must contain at least one alphanumeric character")
+    return slug
+
+
+def write_upload_metadata(runs_dir: Path, dataset_name: str) -> Path:
+    metadata_path = runs_dir / UPLOAD_METADATA_FILENAME
+    metadata = {
+        "dataset_name": dataset_name,
+        "dataset_slug": slugify_dataset_name(dataset_name),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    return metadata_path
+
+
+def resolve_dataset_name(runs_dir: Path, dataset_name: str | None = None) -> str:
+    if dataset_name:
+        return dataset_name
+
+    metadata_path = runs_dir / UPLOAD_METADATA_FILENAME
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        stored_name = metadata.get("dataset_name")
+        if isinstance(stored_name, str) and stored_name.strip():
+            return stored_name
+
+    if runs_dir.name != "runs":
+        return runs_dir.name
+
+    raise ValueError(
+        f"Could not determine dataset name. Pass it explicitly or add {UPLOAD_METADATA_FILENAME} to {runs_dir}."
+    )
+
+
+async def get_signed_urls(
+    artifacts: List[str], dataset_name: str | None = None
+) -> Tuple[int, str, Dict[str, str]]:
     url = f"{OBJECT_LEDGER_URL}/v1/storage/signed-urls"
     headers = {"x-api-key": API_KEY}
-    data = {"artifacts": artifacts}
+    data = {"artifacts": artifacts, "dataset_name": dataset_name}
 
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers, json=data, timeout=30)
         response.raise_for_status()
 
     result = response.json()
-    return result["run_id"], result["urls"]
+    return result["run_id"], result["run_prefix"], result["urls"]
 
 
 async def upload_file_chunked(
@@ -128,6 +169,7 @@ def zip_directory(source_dir: Path, zip_path: Path, progress: bool = True) -> No
 
 async def upload_training_run(
     runs_dir: Path,
+    dataset_name: str,
     checkpoint_ema_path: Path,
     checkpoint_regular_path: Path,
     metrics_path: Path,
@@ -135,33 +177,29 @@ async def upload_training_run(
     onnx_path: Path,
 ) -> int:
     typer.echo("Preparing artifacts for upload...")
+    dataset_slug = slugify_dataset_name(dataset_name)
+    typer.echo(f"Dataset scope: {dataset_slug}")
 
     # Create zip file for evaluation artifacts
     zip_path = runs_dir / "evaluation_artifacts.zip"
     zip_directory(eval_dir, zip_path)
 
     # Define artifacts to upload
-    artifacts = [
-        "checkpoint_best_ema.pth",
-        "checkpoint_best_regular.pth",
-        "metrics.csv",
-        "evaluation_artifacts.zip",
-        "model.onnx",
-    ]
-
-    local_paths = {
+    artifact_files = {
         "checkpoint_best_ema.pth": checkpoint_ema_path,
         "checkpoint_best_regular.pth": checkpoint_regular_path,
         "metrics.csv": metrics_path,
         "evaluation_artifacts.zip": zip_path,
         "model.onnx": onnx_path,
     }
+    artifacts = list(artifact_files)
+    local_paths = dict(artifact_files)
 
     # Get signed URLs from object-ledger
     typer.echo("Requesting upload URLs from object-ledger...")
     try:
-        run_id, urls = await get_signed_urls(artifacts)
-        typer.echo(f"Assigned run ID: {run_id}")
+        run_id, run_prefix, urls = await get_signed_urls(artifacts, dataset_name)
+        typer.echo(f"Assigned scoped run ID: {dataset_slug}-{run_id}")
     except httpx.HTTPError as e:
         typer.echo(f"Failed to get signed URLs: {e}", err=True)
         raise
@@ -173,7 +211,7 @@ async def upload_training_run(
     # Cleanup zip file
     zip_path.unlink()
 
-    typer.echo(f"Successfully uploaded run {run_id} to GCS!")
-    typer.echo(f"Location: stm-ai-bucket/training_ground/runs/{run_id}/")
+    typer.echo(f"Successfully uploaded run {dataset_slug}-{run_id} to GCS!")
+    typer.echo(f"Location: stm-ai-bucket/{run_prefix}{run_id}/")
 
     return run_id

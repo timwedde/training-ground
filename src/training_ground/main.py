@@ -6,7 +6,7 @@ import typer
 from .analysis import analyze_dataset
 from .evaluation import run_evaluation, run_prediction_directory
 from .metrics_plotting import plot_training_metrics
-from .upload import upload_training_run
+from .upload import resolve_dataset_name, slugify_dataset_name, upload_training_run
 from .wizard import run_wizard
 
 app = typer.Typer()
@@ -113,6 +113,11 @@ def upload(
     runs_dir: Path = typer.Argument(
         "runs", exists=True, file_okay=False, help="Training runs directory."
     ),
+    dataset_name: str | None = typer.Option(
+        None,
+        "--dataset-name",
+        help="Dataset name to scope the uploaded run. Defaults to stored upload metadata or the runs directory name.",
+    ),
 ):
     """
     Upload a training run to GCP.
@@ -139,9 +144,16 @@ def upload(
         typer.echo(f"ONNX model not found: {onnx_path}", err=True)
         raise typer.Exit(code=1)
 
+    try:
+        resolved_dataset_name = resolve_dataset_name(runs_dir, dataset_name)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
     run_id = asyncio.run(
         upload_training_run(
             runs_dir=runs_dir,
+            dataset_name=resolved_dataset_name,
             checkpoint_ema_path=checkpoint_ema,
             checkpoint_regular_path=checkpoint_regular,
             metrics_path=metrics_path,
@@ -149,7 +161,9 @@ def upload(
             onnx_path=onnx_path,
         )
     )
-    typer.echo(f"Upload complete: run ID {run_id}")
+    typer.echo(
+        f"Upload complete: run ID {slugify_dataset_name(resolved_dataset_name)}-{run_id}"
+    )
 
 
 if __name__ == "__main__":

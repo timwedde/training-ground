@@ -37,7 +37,11 @@ if not hasattr(onnx.helper, "float32_to_bfloat16"):
 
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
-from .upload import upload_training_run
+from .upload import (
+    slugify_dataset_name,
+    upload_training_run,
+    write_upload_metadata,
+)
 
 
 def fetch_project_info(data):
@@ -103,6 +107,7 @@ def run_wizard():
 
     dataset_path = f"./datasets/{version.id}"
     version.download(model_format="coco", location=dataset_path)
+    dataset_name = project.id.split("/")[-1]
 
     import torch.multiprocessing as mp
 
@@ -129,6 +134,7 @@ def run_wizard():
     )
 
     runs_dir = Path("runs")
+    write_upload_metadata(runs_dir, dataset_name)
 
     typer.echo("Exporting model to ONNX...")
     model.export(output_dir=str(runs_dir))
@@ -171,6 +177,7 @@ def run_wizard():
     run_id = asyncio.run(
         upload_training_run(
             runs_dir=runs_dir,
+            dataset_name=dataset_name,
             checkpoint_ema_path=checkpoint_ema,
             checkpoint_regular_path=runs_dir / "checkpoint_best_regular.pth",
             metrics_path=metrics_path,
@@ -178,4 +185,6 @@ def run_wizard():
             onnx_path=onnx_path,
         )
     )
-    typer.echo(f"Training run {run_id} complete and uploaded successfully")
+    typer.echo(
+        f"Training run {slugify_dataset_name(dataset_name)}-{run_id} complete and uploaded successfully"
+    )
