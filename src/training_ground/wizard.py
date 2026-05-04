@@ -87,7 +87,9 @@ def _patch_rfdetr_training_pretrain_loader():
     def _load_pretrain_weights_with_pe_interpolation(self) -> None:
         load_pretrain_weights(self.model, self.model_config)
 
-    RFDETRModelModule._load_pretrain_weights = _load_pretrain_weights_with_pe_interpolation
+    RFDETRModelModule._load_pretrain_weights = (
+        _load_pretrain_weights_with_pe_interpolation
+    )
 
 
 def run_wizard():

@@ -22,7 +22,9 @@ UPLOAD_METADATA_FILENAME = "upload_metadata.json"
 def slugify_dataset_name(dataset_name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", dataset_name.strip().lower()).strip("-")
     if not slug:
-        raise ValueError("Dataset name must contain at least one alphanumeric character")
+        raise ValueError(
+            "Dataset name must contain at least one alphanumeric character"
+        )
     return slug
 
 
