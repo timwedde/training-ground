@@ -120,7 +120,6 @@ def run_wizard():
         epochs=100,
         batch_size=batch_size,
         grad_accum_steps=grad_accum_steps,
-        resolution=372,
         early_stopping=True,
         early_stopping_patience=3,
         progress_bar=True,
