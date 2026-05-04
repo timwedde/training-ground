@@ -114,7 +114,7 @@ def run_wizard():
     mp.set_sharing_strategy("file_system")
     from rfdetr.detr import RFDETRSegNano
 
-    model = RFDETRSegNano(resolution=372)
+    model = RFDETRSegNano()
     model.train(
         dataset_dir=dataset_path,
         epochs=100,
