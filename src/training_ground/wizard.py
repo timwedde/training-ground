@@ -43,11 +43,51 @@ from .upload import (
     write_upload_metadata,
 )
 
+DEFAULT_TRAINING_RESOLUTION = 372
+
 
 def fetch_project_info(data):
     workspace, project_id = data
     project = workspace.project(project_id)
     return project, project.versions()
+
+
+def _patch_rfdetr_training_pretrain_loader():
+    """
+    Patch RF-DETR's training module to support custom input resolutions again.
+
+    Why this exists:
+    - `model.train(resolution=...)` is still a supported RF-DETR API.
+    - In the currently installed `rfdetr`, the training-specific pretrained
+      weight loader does not interpolate backbone positional embeddings before
+      `load_state_dict(...)`.
+    - That breaks training as soon as we request a non-default resolution such
+      as 372, because the pretrained checkpoint was saved at 312 and its
+      positional embedding tensor no longer matches the resized model.
+
+    What this patch does:
+    - Replaces `RFDETRModelModule._load_pretrain_weights` with the shared
+      `rfdetr.models.weights.load_pretrain_weights(...)` helper.
+    - That helper already performs the required positional-embedding
+      interpolation, so custom-resolution training works again without changing
+      RF-DETR's public training API.
+
+    Scope:
+    - This is a narrow runtime patch applied only by this training wizard.
+    - It leaves inference/export code paths untouched.
+    """
+    from rfdetr.models.weights import load_pretrain_weights
+    from rfdetr.training.module_model import RFDETRModelModule
+
+    if getattr(RFDETRModelModule._load_pretrain_weights, "__name__", "") == (
+        "_load_pretrain_weights_with_pe_interpolation"
+    ):
+        return
+
+    def _load_pretrain_weights_with_pe_interpolation(self) -> None:
+        load_pretrain_weights(self.model, self.model_config)
+
+    RFDETRModelModule._load_pretrain_weights = _load_pretrain_weights_with_pe_interpolation
 
 
 def run_wizard():
@@ -114,12 +154,21 @@ def run_wizard():
     mp.set_sharing_strategy("file_system")
     from rfdetr.detr import RFDETRSegNano
 
+    # RF-DETR 1.6.x regressed custom-resolution training: train(resolution=...)
+    # mutates the model config, but the training-time pretrained-weight loader
+    # still tries to load 312-resolution positional embeddings directly into the
+    # resized model. We patch that loader so it interpolates positional
+    # embeddings before loading, which restores the previously working
+    # custom-resolution flow for this wizard.
+    _patch_rfdetr_training_pretrain_loader()
+
     model = RFDETRSegNano()
     model.train(
         dataset_dir=dataset_path,
         epochs=100,
         batch_size=batch_size,
         grad_accum_steps=grad_accum_steps,
+        resolution=DEFAULT_TRAINING_RESOLUTION,
         early_stopping=True,
         early_stopping_patience=3,
         progress_bar=True,
