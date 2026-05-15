@@ -10,7 +10,8 @@ import typer
 
 from .training_backends import (
     RFDETR_BACKEND,
-    RFDETR_SEG_NANO_NAME,
+    RFDETR_MODEL_FAMILY,
+    RFDETR_SEG_MODELS,
     YOLO26_BACKEND,
     YOLO26_MODEL_FAMILY,
     YOLO26_SEG_MODELS,
@@ -58,7 +59,7 @@ def build_training_metadata(
         "model_family": (
             YOLO26_MODEL_FAMILY
             if artifacts.backend == YOLO26_BACKEND
-            else "RF-DETR"
+            else RFDETR_MODEL_FAMILY
         ),
         "runs_dir": ".",
         "primary_checkpoint_path": _relative_to_runs_dir(
@@ -153,8 +154,10 @@ def resolve_training_artifacts(
     if normalized_backend == RFDETR_BACKEND:
         artifacts = TrainingArtifacts(
             backend=RFDETR_BACKEND,
-            model_name=RFDETR_SEG_NANO_NAME,
-            model_size=None,
+            model_name=str(
+                (metadata or {}).get("model_name", RFDETR_SEG_MODELS["nano"][0])
+            ),
+            model_size=(metadata or {}).get("model_size"),
             runs_dir=runs_dir,
             primary_checkpoint_path=runs_dir / "checkpoint_best_ema.pth",
             secondary_checkpoint_path=runs_dir / "checkpoint_best_regular.pth",

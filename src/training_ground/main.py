@@ -69,6 +69,11 @@ def evaluate(
         "--backend",
         help="Model backend: yolo26 or rfdetr.",
     ),
+    model_size: str | None = typer.Option(
+        None,
+        "--model-size",
+        help="Model size. Required for non-nano RF-DETR checkpoints.",
+    ),
 ):
     """
     Evaluate a model checkpoint on a dataset split.
@@ -80,6 +85,7 @@ def evaluate(
         threshold=threshold,
         iou_threshold=iou_threshold,
         backend=normalize_backend(backend),
+        model_size=model_size,
     )
 
     typer.echo(f"Evaluation complete. Artifacts written to {output_dir}")
@@ -107,6 +113,11 @@ def predict_dir(
         "--backend",
         help="Model backend: yolo26 or rfdetr.",
     ),
+    model_size: str | None = typer.Option(
+        None,
+        "--model-size",
+        help="Model size. Required for non-nano RF-DETR checkpoints.",
+    ),
 ):
     """
     Run predictions on every image in a directory tree.
@@ -117,6 +128,7 @@ def predict_dir(
         output_dir=output_dir,
         threshold=threshold,
         backend=normalize_backend(backend),
+        model_size=model_size,
     )
 
     typer.echo(

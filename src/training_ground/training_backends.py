@@ -6,7 +6,16 @@ Backend = Literal["rfdetr", "yolo26"]
 
 RFDETR_BACKEND: Backend = "rfdetr"
 YOLO26_BACKEND: Backend = "yolo26"
-RFDETR_SEG_NANO_NAME = "RF-DETR Seg Nano"
+RFDETR_MODEL_FAMILY = "RF-DETR"
+RFDETR_SEG_MODEL_LABEL = "RF-DETR Seg"
+RFDETR_SEG_MODELS = {
+    "nano": ("RF-DETR Seg Nano", "RFDETRSegNano"),
+    "small": ("RF-DETR Seg Small", "RFDETRSegSmall"),
+    "medium": ("RF-DETR Seg Medium", "RFDETRSegMedium"),
+    "large": ("RF-DETR Seg Large", "RFDETRSegLarge"),
+    "xlarge": ("RF-DETR Seg XLarge", "RFDETRSegXLarge"),
+    "2xlarge": ("RF-DETR Seg 2XLarge", "RFDETRSeg2XLarge"),
+}
 YOLO26_MODEL_FAMILY = "YOLO26"
 
 YOLO26_SEG_MODELS = {
@@ -23,6 +32,14 @@ YOLO26_SIZE_LABELS = {
     "medium": "Medium",
     "large": "Large",
     "xlarge": "XLarge",
+}
+RFDETR_SIZE_LABELS = {
+    "nano": "Nano",
+    "small": "Small",
+    "medium": "Medium",
+    "large": "Large",
+    "xlarge": "XLarge",
+    "2xlarge": "2XLarge",
 }
 
 
@@ -48,4 +65,3 @@ def normalize_backend(value: str) -> Backend:
 
 def yolo26_run_name(model_size: str) -> str:
     return f"yolo26-{model_size}"
-

@@ -18,7 +18,9 @@ from .evaluation import create_rfdetr_predictor, run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .training_backends import (
     RFDETR_BACKEND,
-    RFDETR_SEG_NANO_NAME,
+    RFDETR_SEG_MODELS,
+    RFDETR_SEG_MODEL_LABEL,
+    RFDETR_SIZE_LABELS,
     YOLO26_BACKEND,
     YOLO26_SEG_MODELS,
     YOLO26_SIZE_LABELS,
@@ -35,6 +37,7 @@ from .upload import (
 
 DEFAULT_TRAINING_RESOLUTION = 372
 YOLO26_IMAGE_SIZE = 640
+BACK_CHOICE = "__back__"
 
 
 def _float32_to_bfloat16(fval: float, truncate: bool = False) -> int:
@@ -197,15 +200,17 @@ def train_rfdetr_seg_nano(
     dataset_path: Path,
     batch_size: int,
     grad_accum_steps: int,
+    model_size: str = "nano",
 ) -> TrainingArtifacts:
     import torch.multiprocessing as mp
     from onnxsim import simplify
-    from rfdetr.detr import RFDETRSegNano
+    import rfdetr.detr as rfdetr_detr
 
     mp.set_sharing_strategy("file_system")
     _patch_rfdetr_training_pretrain_loader()
 
-    model = RFDETRSegNano()
+    model_name, constructor_name = RFDETR_SEG_MODELS[model_size]
+    model = getattr(rfdetr_detr, constructor_name)()
     model.train(
         dataset_dir=str(dataset_path),
         epochs=100,
@@ -248,14 +253,15 @@ def train_rfdetr_seg_nano(
         threshold=0.5,
         iou_threshold=0.5,
         model=create_rfdetr_predictor(checkpoint_ema, model=model),
+        model_size=model_size,
         backend=RFDETR_BACKEND,
         output_dir=eval_dir,
     )
 
     return TrainingArtifacts(
         backend=RFDETR_BACKEND,
-        model_name=RFDETR_SEG_NANO_NAME,
-        model_size=None,
+        model_name=model_name,
+        model_size=model_size,
         runs_dir=runs_dir,
         primary_checkpoint_path=checkpoint_ema,
         secondary_checkpoint_path=checkpoint_regular,
@@ -350,56 +356,135 @@ def run_wizard():
 
     projects.sort(key=lambda p: p[0].updated, reverse=True)
 
-    project, versions = questionary.select(
-        "Select project",
-        choices=[Choice(title=p.id, value=(p, v)) for p, v in projects],
-    ).ask()
-
-    version = questionary.select(
-        "Select dataset version",
-        choices=[Choice(title=v.id.split("/")[-1], value=v) for v in versions],
-    ).ask()
-
-    backend = questionary.select(
-        "Select model backend",
-        choices=[
-            Choice(title="YOLO26", value=YOLO26_BACKEND),
-            Choice(title=RFDETR_SEG_NANO_NAME, value=RFDETR_BACKEND),
-        ],
-    ).ask()
-
+    project_index = 0
+    version_index = 0
+    project = None
+    versions = None
+    version = None
+    backend = None
     model_size = None
-    if backend == YOLO26_BACKEND:
-        model_size = questionary.select(
-            "Select YOLO26 model size",
-            choices=[
-                Choice(title=YOLO26_SIZE_LABELS[size], value=size)
-                for size in ("nano", "small", "medium", "large", "xlarge")
-            ],
-        ).ask()
+    batch_size = None
+    grad_accum_steps = 1
 
-    batch_size_selection = questionary.select(
-        "Select GPU VRAM",
-        choices=[
-            Choice(title="RTX  4080 (16GB)", value=(16, 1)),
-            Choice(title="RTX  4090 (24GB)", value=(32, 1)),
-            Choice(title="RTX  5090 (32GB)", value=(48, 1)),
-            Choice(title="RTX A6000 (48GB)", value=(64, 1)),
-            Choice(title="RTX  A100 (80GB)", value=(94, 1)),
-            Choice(title="Custom", value="custom"),
-        ],
-    ).ask()
-
-    if batch_size_selection == "custom":
-        batch_size = int(
-            questionary.text(
-                "Enter custom batch size",
-                validate=lambda value: value.isdigit() and int(value) > 0,
+    step = "project"
+    while True:
+        if step == "project":
+            choices = [Choice(title=p.id, value=index) for index, (p, _) in enumerate(projects)]
+            selected = questionary.select(
+                "Select project",
+                choices=choices,
+                default=project_index,
+                instruction="(Enter to continue)",
             ).ask()
-        )
-        grad_accum_steps = 1
-    else:
-        batch_size, grad_accum_steps = batch_size_selection
+            project_index = int(selected)
+            project, versions = projects[project_index]
+            step = "version"
+            continue
+
+        if step == "version":
+            assert versions is not None
+            version_choices = [
+                Choice(title=v.id.split("/")[-1], value=index)
+                for index, v in enumerate(versions)
+            ]
+            version_choices.append(Choice(title="Back", value=BACK_CHOICE))
+            selected = questionary.select(
+                "Select dataset version",
+                choices=version_choices,
+                default=version_index,
+                instruction="(Select Back to return)",
+            ).ask()
+            if selected == BACK_CHOICE:
+                step = "project"
+                continue
+            version_index = int(selected)
+            version = versions[version_index]
+            step = "backend"
+            continue
+
+        if step == "backend":
+            selected = questionary.select(
+                "Select model backend",
+                choices=[
+                    Choice(title="YOLO26", value=YOLO26_BACKEND),
+                    Choice(title=RFDETR_SEG_MODEL_LABEL, value=RFDETR_BACKEND),
+                    Choice(title="Back", value=BACK_CHOICE),
+                ],
+                default=backend or YOLO26_BACKEND,
+                instruction="(Select Back to return)",
+            ).ask()
+            if selected == BACK_CHOICE:
+                step = "version"
+                continue
+            backend = selected
+            step = "model_size"
+            continue
+
+        if step == "model_size":
+            if backend == YOLO26_BACKEND:
+                selected = questionary.select(
+                    "Select YOLO26 model size",
+                    choices=[
+                        Choice(title=YOLO26_SIZE_LABELS[size], value=size)
+                        for size in ("nano", "small", "medium", "large", "xlarge")
+                    ]
+                    + [Choice(title="Back", value=BACK_CHOICE)],
+                    default=model_size or "nano",
+                    instruction="(Select Back to return)",
+                ).ask()
+            else:
+                selected = questionary.select(
+                    "Select RF-DETR model size",
+                    choices=[
+                        Choice(title=RFDETR_SIZE_LABELS[size], value=size)
+                        for size in ("nano", "small", "medium", "large", "xlarge", "2xlarge")
+                    ]
+                    + [Choice(title="Back", value=BACK_CHOICE)],
+                    default=model_size or "nano",
+                    instruction="(Select Back to return)",
+                ).ask()
+            if selected == BACK_CHOICE:
+                step = "backend"
+                continue
+            model_size = selected
+            step = "gpu"
+            continue
+
+        if step == "gpu":
+            batch_size_selection = questionary.select(
+                "Select GPU VRAM",
+                choices=[
+                    Choice(title="RTX  4080 (16GB)", value=(16, 1)),
+                    Choice(title="RTX  4090 (24GB)", value=(32, 1)),
+                    Choice(title="RTX  5090 (32GB)", value=(48, 1)),
+                    Choice(title="RTX A6000 (48GB)", value=(64, 1)),
+                    Choice(title="RTX  A100 (80GB)", value=(94, 1)),
+                    Choice(title="Custom", value="custom"),
+                    Choice(title="Back", value=BACK_CHOICE),
+                ],
+                instruction="(Select Back to return)",
+            ).ask()
+            if batch_size_selection == BACK_CHOICE:
+                step = "model_size"
+                continue
+
+            if batch_size_selection == "custom":
+                custom_value = questionary.text(
+                    "Enter custom batch size",
+                    validate=lambda value: value.isdigit() and int(value) > 0,
+                    instruction="(Ctrl+C to abort, Enter to continue)",
+                ).ask()
+                batch_size = int(custom_value)
+                grad_accum_steps = 1
+            else:
+                batch_size, grad_accum_steps = batch_size_selection
+            break
+
+    assert project is not None
+    assert version is not None
+    assert backend is not None
+    assert model_size is not None
+    assert batch_size is not None
 
     dataset_path = Path("datasets") / version.id
     version.download(model_format="coco", location=str(dataset_path))
@@ -410,6 +495,7 @@ def run_wizard():
             dataset_path=dataset_path,
             batch_size=batch_size,
             grad_accum_steps=grad_accum_steps,
+            model_size=model_size,
         )
     else:
         artifacts = train_yolo26_seg(

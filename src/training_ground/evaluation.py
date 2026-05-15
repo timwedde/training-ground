@@ -15,7 +15,12 @@ from .coco import decode_segmentation, encode_binary_mask, load_coco_annotations
 from .coco_eval import run_coco_eval
 from .evaluation_plots import write_evaluation_plots
 from .geometry import bbox_iou, mask_iou, xywh_to_xyxy, xyxy_to_xywh
-from .training_backends import Backend, RFDETR_BACKEND, YOLO26_BACKEND
+from .training_backends import (
+    Backend,
+    RFDETR_BACKEND,
+    RFDETR_SEG_MODELS,
+    YOLO26_BACKEND,
+)
 
 OVERLAY_ALPHA = 0.28
 OVERLAY_QUALITY = 92
@@ -120,12 +125,16 @@ class DetectionBatch:
         return len(self.class_id)
 
 
-def create_rfdetr_predictor(checkpoint_path: Path, model=None) -> Predictor:
+def create_rfdetr_predictor(
+    checkpoint_path: Path, model=None, model_size: str = "nano"
+) -> Predictor:
     if model is None:
-        from rfdetr.detr import RFDETRSegNano
+        import rfdetr.detr as rfdetr_detr
 
         typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
-        model = RFDETRSegNano(pretrain_weights=str(checkpoint_path), resolution=372)
+        _, constructor_name = RFDETR_SEG_MODELS[model_size]
+        constructor = getattr(rfdetr_detr, constructor_name)
+        model = constructor(pretrain_weights=str(checkpoint_path), resolution=372)
     predictor = RFDETRPredictorAdapter(model)
     predictor.optimize_for_inference()
     return predictor
@@ -135,11 +144,18 @@ def create_yolo26_predictor(checkpoint_path: Path) -> Predictor:
     return YOLO26PredictorAdapter(checkpoint_path)
 
 
-def create_model(checkpoint_path: Path, backend: Backend, model=None) -> Predictor:
+def create_model(
+    checkpoint_path: Path,
+    backend: Backend,
+    model=None,
+    model_size: str | None = None,
+) -> Predictor:
     if backend == YOLO26_BACKEND:
         return create_yolo26_predictor(checkpoint_path)
     if backend == RFDETR_BACKEND:
-        return create_rfdetr_predictor(checkpoint_path, model=model)
+        return create_rfdetr_predictor(
+            checkpoint_path, model=model, model_size=model_size or "nano"
+        )
     raise ValueError(f"Unsupported backend: {backend}")
 
 
@@ -461,6 +477,7 @@ def run_prediction_directory(
     output_dir: Path,
     threshold: float,
     backend: Backend = RFDETR_BACKEND,
+    model_size: str | None = None,
 ) -> dict:
     if not input_dir.exists() or not input_dir.is_dir():
         raise typer.BadParameter(f"Input directory does not exist: {input_dir}")
@@ -472,7 +489,7 @@ def run_prediction_directory(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = create_model(checkpoint_path, backend)
+    model = create_model(checkpoint_path, backend, model_size=model_size)
 
     category_names = {
         index: str(name)
@@ -521,6 +538,7 @@ def run_evaluation(
     model: Predictor | None = None,
     backend: Backend = RFDETR_BACKEND,
     output_dir: Path | None = None,
+    model_size: str | None = None,
 ) -> Path:
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
     images_by_id, annotations_by_image, categories, coco_label_to_category_id, _ = (
@@ -541,7 +559,11 @@ def run_evaluation(
     false_negatives_dir.mkdir(parents=True, exist_ok=True)
 
     if model is None:
-        model = create_model(checkpoint_path, backend)
+        model = create_model(
+            checkpoint_path,
+            backend,
+            model_size=model_size,
+        )
     elif backend == RFDETR_BACKEND and hasattr(model, "optimize_for_inference"):
         model.optimize_for_inference()
     assert model is not None
