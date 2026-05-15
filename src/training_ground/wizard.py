@@ -46,11 +46,11 @@ RFDETR_GPU_CHOICES = [
     Choice(title="RTX  A100 (80GB)", value=(94, 1)),
 ]
 YOLO26_GPU_CHOICES = [
-    Choice(title="RTX  4080 (16GB)", value=(56, 1)),
-    Choice(title="RTX  4090 (24GB)", value=(112, 1)),
-    Choice(title="RTX  5090 (32GB)", value=(168, 1)),
-    Choice(title="RTX A6000 (48GB)", value=(224, 1)),
-    Choice(title="RTX  A100 (80GB)", value=(330, 1)),
+    Choice(title="RTX  4080 (16GB)", value=(48, 1)),
+    Choice(title="RTX  4090 (24GB)", value=(96, 1)),
+    Choice(title="RTX  5090 (32GB)", value=(144, 1)),
+    Choice(title="RTX A6000 (48GB)", value=(192, 1)),
+    Choice(title="RTX  A100 (80GB)", value=(282, 1)),
 ]
 
 
