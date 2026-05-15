@@ -18,8 +18,8 @@ from .evaluation import create_rfdetr_predictor, run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .training_backends import (
     RFDETR_BACKEND,
-    RFDETR_SEG_MODELS,
     RFDETR_SEG_MODEL_LABEL,
+    RFDETR_SEG_MODELS,
     RFDETR_SIZE_LABELS,
     YOLO26_BACKEND,
     YOLO26_SEG_MODELS,
@@ -95,7 +95,9 @@ def _normalize_coco_annotations(annotation_path: Path, output_path: Path) -> lis
         dataset = json.load(handle)
 
     images_by_id = {image["id"]: image for image in dataset.get("images", [])}
-    categories = sorted(dataset.get("categories", []), key=lambda category: category["id"])
+    categories = sorted(
+        dataset.get("categories", []), key=lambda category: category["id"]
+    )
     category_id_map = {
         category["id"]: index + 1 for index, category in enumerate(categories)
     }
@@ -124,7 +126,9 @@ def _normalize_coco_annotations(annotation_path: Path, output_path: Path) -> lis
                     polygons.append(contour.astype(float).reshape(-1).tolist())
             normalized["segmentation"] = polygons
         elif isinstance(segmentation, list):
-            normalized["segmentation"] = [segment for segment in segmentation if len(segment) >= 6]
+            normalized["segmentation"] = [
+                segment for segment in segmentation if len(segment) >= 6
+            ]
         else:
             normalized["segmentation"] = []
         normalized_annotations.append(normalized)
@@ -202,9 +206,9 @@ def train_rfdetr_seg_nano(
     grad_accum_steps: int,
     model_size: str = "nano",
 ) -> TrainingArtifacts:
+    import rfdetr.detr as rfdetr_detr
     import torch.multiprocessing as mp
     from onnxsim import simplify
-    import rfdetr.detr as rfdetr_detr
 
     mp.set_sharing_strategy("file_system")
     _patch_rfdetr_training_pretrain_loader()
@@ -284,7 +288,7 @@ def train_yolo26_seg(
     model = YOLO(selected_model_name)
     model.train(
         data=str(data_yaml_path),
-        epochs=100,
+        epochs=200,
         batch=batch_size,
         imgsz=YOLO26_IMAGE_SIZE,
         patience=3,
@@ -369,7 +373,9 @@ def run_wizard():
     step = "project"
     while True:
         if step == "project":
-            choices = [Choice(title=p.id, value=index) for index, (p, _) in enumerate(projects)]
+            choices = [
+                Choice(title=p.id, value=index) for index, (p, _) in enumerate(projects)
+            ]
             selected = questionary.select(
                 "Select project",
                 choices=choices,
@@ -437,7 +443,14 @@ def run_wizard():
                     "Select RF-DETR model size",
                     choices=[
                         Choice(title=RFDETR_SIZE_LABELS[size], value=size)
-                        for size in ("nano", "small", "medium", "large", "xlarge", "2xlarge")
+                        for size in (
+                            "nano",
+                            "small",
+                            "medium",
+                            "large",
+                            "xlarge",
+                            "2xlarge",
+                        )
                     ]
                     + [Choice(title="Back", value=BACK_CHOICE)],
                     default=model_size or "nano",
