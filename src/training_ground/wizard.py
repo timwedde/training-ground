@@ -312,10 +312,21 @@ def train_yolo26_seg(
         exist_ok=True,
     )
 
-    runs_dir = Path("runs") / run_name
+    trainer = getattr(model, "trainer", None)
+    save_dir = getattr(trainer, "save_dir", None)
+    if save_dir is None:
+        raise RuntimeError("YOLO26 training completed but Ultralytics did not expose a save_dir")
+
+    runs_dir = Path(save_dir)
     best_path = runs_dir / "weights" / "best.pt"
     last_path = runs_dir / "weights" / "last.pt"
     metrics_path = runs_dir / "results.csv"
+    if not best_path.exists():
+        raise RuntimeError(f"YOLO26 training did not produce expected best checkpoint: {best_path}")
+    if not last_path.exists():
+        raise RuntimeError(f"YOLO26 training did not produce expected last checkpoint: {last_path}")
+    if not metrics_path.exists():
+        raise RuntimeError(f"YOLO26 training did not produce expected metrics file: {metrics_path}")
 
     typer.echo("Exporting YOLO26 model to ONNX...")
     export_model = YOLO(str(best_path))
@@ -323,7 +334,7 @@ def train_yolo26_seg(
         export_model.export(format="onnx", imgsz=YOLO26_IMAGE_SIZE, simplify=True)
     )
     onnx_path = runs_dir / "model.onnx"
-    if exported_path != onnx_path:
+    if exported_path.resolve() != onnx_path.resolve():
         shutil.copy2(exported_path, onnx_path)
 
     typer.echo("Generating training metrics plots...")
