@@ -29,7 +29,9 @@ def _read_rows(metrics_path: Path) -> tuple[list[dict], list[str]]:
     with metrics_path.open(newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = list(reader.fieldnames or [])
-        rows = [{name: parse_float(raw.get(name)) for name in fieldnames} for raw in reader]
+        rows = [
+            {name: parse_float(raw.get(name)) for name in fieldnames} for raw in reader
+        ]
     return rows, fieldnames
 
 
@@ -84,9 +86,25 @@ def _plot_rfdetr_metrics(
             "Learning rate",
         ),
         series_groups=(
-            (1, 1, train_rows, ["train/loss", "train/loss_ce", "train/loss_bbox", "train/loss_giou"]),
+            (
+                1,
+                1,
+                train_rows,
+                ["train/loss", "train/loss_ce", "train/loss_bbox", "train/loss_giou"],
+            ),
             (1, 2, val_rows, ["val/loss", "val/mAP_50", "val/mAP_50_95", "val/F1"]),
-            (2, 1, val_rows, ["val/precision", "val/recall", "val/mAR", "val/ema_mAP_50", "val/ema_mAP_50_95"]),
+            (
+                2,
+                1,
+                val_rows,
+                [
+                    "val/precision",
+                    "val/recall",
+                    "val/mAR",
+                    "val/ema_mAP_50",
+                    "val/ema_mAP_50_95",
+                ],
+            ),
             (2, 2, lr_rows, ["train/lr", "train/lr_max", "train/lr_min"]),
         ),
     )
@@ -128,9 +146,34 @@ def _plot_yolo26_metrics(
             "Learning rate",
         ),
         series_groups=(
-            (1, 1, normalized_rows, ["train/box_loss", "train/seg_loss", "train/cls_loss"]),
-            (1, 2, normalized_rows, ["metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)", "metrics/mAP50-95(B)"]),
-            (2, 1, normalized_rows, ["metrics/precision(M)", "metrics/recall(M)", "metrics/mAP50(M)", "metrics/mAP50-95(M)"]),
+            (
+                1,
+                1,
+                normalized_rows,
+                ["train/box_loss", "train/seg_loss", "train/cls_loss"],
+            ),
+            (
+                1,
+                2,
+                normalized_rows,
+                [
+                    "metrics/precision(B)",
+                    "metrics/recall(B)",
+                    "metrics/mAP50(B)",
+                    "metrics/mAP50-95(B)",
+                ],
+            ),
+            (
+                2,
+                1,
+                normalized_rows,
+                [
+                    "metrics/precision(M)",
+                    "metrics/recall(M)",
+                    "metrics/mAP50(M)",
+                    "metrics/mAP50-95(M)",
+                ],
+            ),
             (2, 2, normalized_rows, ["lr/pg0", "lr/pg1", "lr/pg2"]),
         ),
     )
@@ -178,7 +221,9 @@ def _add_series(
 ) -> bool:
     plotted = False
     for metric in metrics:
-        points = [(row["step"], row[metric]) for row in rows if row.get(metric) is not None]
+        points = [
+            (row["step"], row[metric]) for row in rows if row.get(metric) is not None
+        ]
         if not points:
             continue
         xs, ys = zip(*points, strict=False)
@@ -209,11 +254,17 @@ def _write_per_class_ap(
 
     fig = go.Figure()
     for metric in per_class_metrics:
-        points = [(row["step"], row[metric]) for row in val_rows if row.get(metric) is not None]
+        points = [
+            (row["step"], row[metric])
+            for row in val_rows
+            if row.get(metric) is not None
+        ]
         if not points:
             continue
         xs, ys = zip(*points, strict=False)
-        fig.add_trace(go.Scatter(x=list(xs), y=list(ys), mode="lines+markers", name=metric))
+        fig.add_trace(
+            go.Scatter(x=list(xs), y=list(ys), mode="lines+markers", name=metric)
+        )
 
     fig.update_layout(
         title="Per-class AP",

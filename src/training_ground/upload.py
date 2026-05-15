@@ -66,11 +66,15 @@ def build_training_metadata(
             artifacts.primary_checkpoint_path, artifacts.runs_dir
         ),
         "secondary_checkpoint_path": (
-            _relative_to_runs_dir(artifacts.secondary_checkpoint_path, artifacts.runs_dir)
+            _relative_to_runs_dir(
+                artifacts.secondary_checkpoint_path, artifacts.runs_dir
+            )
             if artifacts.secondary_checkpoint_path is not None
             else None
         ),
-        "metrics_path": _relative_to_runs_dir(artifacts.metrics_path, artifacts.runs_dir),
+        "metrics_path": _relative_to_runs_dir(
+            artifacts.metrics_path, artifacts.runs_dir
+        ),
         "eval_dir": _relative_to_runs_dir(artifacts.eval_dir, artifacts.runs_dir),
         "onnx_path": _relative_to_runs_dir(artifacts.onnx_path, artifacts.runs_dir),
     }
@@ -165,7 +169,9 @@ def resolve_training_artifacts(
             eval_dir=Path(
                 runs_dir
                 / str(
-                    (metadata or {}).get("eval_dir", "checkpoint_best_ema_test_evaluation")
+                    (metadata or {}).get(
+                        "eval_dir", "checkpoint_best_ema_test_evaluation"
+                    )
                 )
             ),
             onnx_path=runs_dir / "inference_model.onnx",
@@ -190,7 +196,9 @@ def resolve_training_artifacts(
         primary_checkpoint_path=runs_dir / "weights" / "best.pt",
         secondary_checkpoint_path=runs_dir / "weights" / "last.pt",
         metrics_path=runs_dir / "results.csv",
-        eval_dir=Path(runs_dir / str((metadata or {}).get("eval_dir", "best_test_evaluation"))),
+        eval_dir=Path(
+            runs_dir / str((metadata or {}).get("eval_dir", "best_test_evaluation"))
+        ),
         onnx_path=runs_dir / "model.onnx",
     )
     return artifacts, metadata

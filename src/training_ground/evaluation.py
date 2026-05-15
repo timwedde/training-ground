@@ -16,10 +16,10 @@ from .coco_eval import run_coco_eval
 from .evaluation_plots import write_evaluation_plots
 from .geometry import bbox_iou, mask_iou, xywh_to_xyxy, xyxy_to_xywh
 from .training_backends import (
-    Backend,
     RFDETR_BACKEND,
     RFDETR_SEG_MODELS,
     YOLO26_BACKEND,
+    Backend,
 )
 
 OVERLAY_ALPHA = 0.28
@@ -33,11 +33,11 @@ CLASS_PRED_COLORS = {
     "sticks": (231, 76, 60),
 }
 
+
 class Predictor(Protocol):
     class_names: list[str]
 
-    def predict(self, image_path: str, threshold: float):
-        ...
+    def predict(self, image_path: str, threshold: float): ...
 
 
 class YOLO26PredictorAdapter:
@@ -46,7 +46,9 @@ class YOLO26PredictorAdapter:
 
         typer.echo(f"Loading YOLO26 model from checkpoint: {checkpoint_path}")
         self._model = YOLO(str(checkpoint_path))
-        names = getattr(self._model, "names", None) or getattr(self._model.model, "names", {})
+        names = getattr(self._model, "names", None) or getattr(
+            self._model.model, "names", {}
+        )
         if isinstance(names, dict):
             self.class_names = [str(names[index]) for index in sorted(names)]
         else:
@@ -104,7 +106,9 @@ class YOLO26PredictorAdapter:
 class RFDETRPredictorAdapter:
     def __init__(self, model):
         self._model = model
-        self.class_names = [str(name) for name in getattr(model, "class_names", []) or []]
+        self.class_names = [
+            str(name) for name in getattr(model, "class_names", []) or []
+        ]
 
     def optimize_for_inference(self) -> None:
         if hasattr(self._model, "optimize_for_inference"):
@@ -460,7 +464,9 @@ def build_label_to_category_id(
     if backend == RFDETR_BACKEND:
         return fallback_mapping
 
-    category_name_to_id = {str(category["name"]): int(category["id"]) for category in categories}
+    category_name_to_id = {
+        str(category["name"]): int(category["id"]) for category in categories
+    }
     mapping: dict[int, int] = {}
     for index, name in enumerate(getattr(model, "class_names", []) or []):
         if name not in category_name_to_id:

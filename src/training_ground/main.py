@@ -171,7 +171,10 @@ def upload(
         if not path.exists():
             typer.echo(f"Required artifact not found: {path}", err=True)
             raise typer.Exit(code=1)
-    if artifacts.secondary_checkpoint_path and not artifacts.secondary_checkpoint_path.exists():
+    if (
+        artifacts.secondary_checkpoint_path
+        and not artifacts.secondary_checkpoint_path.exists()
+    ):
         typer.echo(
             f"Required artifact not found: {artifacts.secondary_checkpoint_path}",
             err=True,
