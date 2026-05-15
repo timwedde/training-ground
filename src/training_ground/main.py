@@ -6,7 +6,15 @@ import typer
 from .analysis import analyze_dataset
 from .evaluation import run_evaluation, run_prediction_directory
 from .metrics_plotting import plot_training_metrics
-from .upload import resolve_dataset_name, slugify_dataset_name, upload_training_run
+from .training_backends import YOLO26_BACKEND, normalize_backend
+from .upload import (
+    artifact_files_for_training,
+    build_training_metadata,
+    resolve_dataset_name,
+    resolve_training_artifacts,
+    slugify_dataset_name,
+    upload_artifact_bundle,
+)
 from .wizard import run_wizard
 
 app = typer.Typer()
@@ -51,24 +59,30 @@ def analyze(dataset_path: Path):
 def evaluate(
     dataset_path: Path = typer.Argument(..., exists=True, file_okay=False),
     checkpoint_path: Path = typer.Argument(
-        "runs/checkpoint_best_ema.pth", exists=True, dir_okay=False
+        "runs/yolo26-nano/weights/best.pt", exists=True, dir_okay=False
     ),
     split: str = typer.Option("test", help="Dataset split: train, valid, or test."),
     threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
     iou_threshold: float = typer.Option(0.5, help="IoU threshold for TP/FP matching."),
+    backend: str = typer.Option(
+        YOLO26_BACKEND,
+        "--backend",
+        help="Model backend: yolo26 or rfdetr.",
+    ),
 ):
     """
     Evaluate a model checkpoint on a dataset split.
     """
-    run_evaluation(
+    output_dir = run_evaluation(
         dataset_path=dataset_path,
         checkpoint_path=checkpoint_path,
         split=split,
         threshold=threshold,
         iou_threshold=iou_threshold,
+        backend=normalize_backend(backend),
     )
 
-    typer.echo("Evaluation complete. Artifacts written to {output_dir}")
+    typer.echo(f"Evaluation complete. Artifacts written to {output_dir}")
     typer.echo("  - overlays")
     typer.echo("  - plots")
     typer.echo("  - per_image_metrics.csv")
@@ -82,12 +96,17 @@ def predict_dir(
     input_dir: Path = typer.Argument(..., exists=True, file_okay=False),
     output_dir: Path = typer.Argument(..., file_okay=False),
     checkpoint_path: Path = typer.Option(
-        "runs/checkpoint_best_ema.pth",
+        "runs/yolo26-nano/weights/best.pt",
         exists=True,
         dir_okay=False,
         help="Model checkpoint path.",
     ),
     threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
+    backend: str = typer.Option(
+        YOLO26_BACKEND,
+        "--backend",
+        help="Model backend: yolo26 or rfdetr.",
+    ),
 ):
     """
     Run predictions on every image in a directory tree.
@@ -97,6 +116,7 @@ def predict_dir(
         checkpoint_path=checkpoint_path,
         output_dir=output_dir,
         threshold=threshold,
+        backend=normalize_backend(backend),
     )
 
     typer.echo(
@@ -118,30 +138,32 @@ def upload(
         "--dataset-name",
         help="Dataset name to scope the uploaded run. Defaults to stored upload metadata or the runs directory name.",
     ),
+    backend: str = typer.Option(
+        YOLO26_BACKEND,
+        "--backend",
+        help="Training backend: yolo26 or rfdetr.",
+    ),
 ):
     """
     Upload a training run to GCP.
     """
-    checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
-    checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
-    metrics_path = runs_dir / "metrics.csv"
-    eval_dir = runs_dir / "checkpoint_best_ema_test_evaluation"
-    onnx_path = runs_dir / "inference_model.onnx"
-
-    if not checkpoint_ema.exists():
-        typer.echo(f"EMA checkpoint not found: {checkpoint_ema}", err=True)
-        raise typer.Exit(code=1)
-    if not checkpoint_regular.exists():
-        typer.echo(f"Regular checkpoint not found: {checkpoint_regular}", err=True)
-        raise typer.Exit(code=1)
-    if not metrics_path.exists():
-        typer.echo(f"Metrics file not found: {metrics_path}", err=True)
-        raise typer.Exit(code=1)
-    if not eval_dir.exists():
-        typer.echo(f"Evaluation directory not found: {eval_dir}", err=True)
-        raise typer.Exit(code=1)
-    if not onnx_path.exists():
-        typer.echo(f"ONNX model not found: {onnx_path}", err=True)
+    artifacts, stored_metadata = resolve_training_artifacts(
+        runs_dir, normalize_backend(backend)
+    )
+    for path in (
+        artifacts.primary_checkpoint_path,
+        artifacts.metrics_path,
+        artifacts.eval_dir,
+        artifacts.onnx_path,
+    ):
+        if not path.exists():
+            typer.echo(f"Required artifact not found: {path}", err=True)
+            raise typer.Exit(code=1)
+    if artifacts.secondary_checkpoint_path and not artifacts.secondary_checkpoint_path.exists():
+        typer.echo(
+            f"Required artifact not found: {artifacts.secondary_checkpoint_path}",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     try:
@@ -150,15 +172,22 @@ def upload(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
+    metadata = build_training_metadata(resolved_dataset_name, artifacts)
+    if stored_metadata:
+        metadata.update(
+            {
+                key: value
+                for key, value in stored_metadata.items()
+                if metadata.get(key) is None and value is not None
+            }
+        )
+
     run_id = asyncio.run(
-        upload_training_run(
+        upload_artifact_bundle(
             runs_dir=runs_dir,
             dataset_name=resolved_dataset_name,
-            checkpoint_ema_path=checkpoint_ema,
-            checkpoint_regular_path=checkpoint_regular,
-            metrics_path=metrics_path,
-            eval_dir=eval_dir,
-            onnx_path=onnx_path,
+            artifact_files=artifact_files_for_training(artifacts),
+            metadata=metadata,
         )
     )
     typer.echo(

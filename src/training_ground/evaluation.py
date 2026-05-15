@@ -1,10 +1,9 @@
 import csv
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import faster_coco_eval
-from rfdetr.detr import RFDETR
 
 faster_coco_eval.init_as_pycocotools()
 import numpy as np
@@ -16,6 +15,7 @@ from .coco import decode_segmentation, encode_binary_mask, load_coco_annotations
 from .coco_eval import run_coco_eval
 from .evaluation_plots import write_evaluation_plots
 from .geometry import bbox_iou, mask_iou, xywh_to_xyxy, xyxy_to_xywh
+from .training_backends import Backend, RFDETR_BACKEND, YOLO26_BACKEND
 
 OVERLAY_ALPHA = 0.28
 OVERLAY_QUALITY = 92
@@ -28,14 +28,119 @@ CLASS_PRED_COLORS = {
     "sticks": (231, 76, 60),
 }
 
+class Predictor(Protocol):
+    class_names: list[str]
 
-def create_model(checkpoint_path: Path) -> RFDETR:
-    from rfdetr.detr import RFDETRSegNano
+    def predict(self, image_path: str, threshold: float):
+        ...
 
-    typer.echo(f"Loading model from checkpoint: {checkpoint_path}")
-    model = RFDETRSegNano(pretrain_weights=str(checkpoint_path), resolution=372)
-    model.optimize_for_inference()
-    return model
+
+class YOLO26PredictorAdapter:
+    def __init__(self, checkpoint_path: Path):
+        from ultralytics import YOLO
+
+        typer.echo(f"Loading YOLO26 model from checkpoint: {checkpoint_path}")
+        self._model = YOLO(str(checkpoint_path))
+        names = getattr(self._model, "names", None) or getattr(self._model.model, "names", {})
+        if isinstance(names, dict):
+            self.class_names = [str(names[index]) for index in sorted(names)]
+        else:
+            self.class_names = [str(name) for name in names]
+
+    def predict(self, image_path: str, threshold: float):
+        results = self._model.predict(
+            source=image_path,
+            conf=threshold,
+            verbose=False,
+            imgsz=640,
+        )
+        result = results[0]
+        boxes = result.boxes
+        masks = result.masks
+        orig_height, orig_width = result.orig_shape
+
+        xyxy = (
+            boxes.xyxy.detach().cpu().numpy()
+            if boxes is not None and boxes.xyxy is not None
+            else np.zeros((0, 4), dtype=np.float32)
+        )
+        confidence = (
+            boxes.conf.detach().cpu().numpy()
+            if boxes is not None and boxes.conf is not None
+            else np.zeros((0,), dtype=np.float32)
+        )
+        class_id = (
+            boxes.cls.detach().cpu().numpy().astype(np.int32)
+            if boxes is not None and boxes.cls is not None
+            else np.zeros((0,), dtype=np.int32)
+        )
+        mask_data = None
+        if masks is not None and masks.data is not None:
+            import cv2
+
+            resized_masks = []
+            for mask in masks.data.detach().cpu().numpy():
+                resized = cv2.resize(
+                    mask.astype(np.float32),
+                    (orig_width, orig_height),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                resized_masks.append(resized >= 0.5)
+            mask_data = np.asarray(resized_masks, dtype=bool)
+
+        return DetectionBatch(
+            xyxy=xyxy,
+            confidence=confidence,
+            class_id=class_id,
+            mask=mask_data,
+        )
+
+
+class RFDETRPredictorAdapter:
+    def __init__(self, model):
+        self._model = model
+        self.class_names = [str(name) for name in getattr(model, "class_names", []) or []]
+
+    def optimize_for_inference(self) -> None:
+        if hasattr(self._model, "optimize_for_inference"):
+            self._model.optimize_for_inference()
+
+    def predict(self, image_path: str, threshold: float):
+        return self._model.predict(image_path, threshold=threshold)
+
+
+class DetectionBatch:
+    def __init__(self, xyxy, confidence, class_id, mask):
+        self.xyxy = xyxy
+        self.confidence = confidence
+        self.class_id = class_id
+        self.mask = mask
+
+    def __len__(self) -> int:
+        return len(self.class_id)
+
+
+def create_rfdetr_predictor(checkpoint_path: Path, model=None) -> Predictor:
+    if model is None:
+        from rfdetr.detr import RFDETRSegNano
+
+        typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
+        model = RFDETRSegNano(pretrain_weights=str(checkpoint_path), resolution=372)
+    predictor = RFDETRPredictorAdapter(model)
+    predictor.optimize_for_inference()
+    return predictor
+
+
+def create_yolo26_predictor(checkpoint_path: Path) -> Predictor:
+    return YOLO26PredictorAdapter(checkpoint_path)
+
+
+def create_model(checkpoint_path: Path, backend: Backend, model=None) -> Predictor:
+    if backend == YOLO26_BACKEND:
+        return create_yolo26_predictor(checkpoint_path)
+    if backend == RFDETR_BACKEND:
+        return create_rfdetr_predictor(checkpoint_path, model=model)
+    raise ValueError(f"Unsupported backend: {backend}")
 
 
 def resolve_dataset_split(dataset_path: Path, split: str) -> tuple[Path, Path]:
@@ -330,11 +435,32 @@ def build_pred_items(
     return pred_items
 
 
+def build_label_to_category_id(
+    model: Predictor,
+    categories: list[dict],
+    backend: Backend,
+    fallback_mapping: dict[int, int],
+) -> dict[int, int]:
+    if backend == RFDETR_BACKEND:
+        return fallback_mapping
+
+    category_name_to_id = {str(category["name"]): int(category["id"]) for category in categories}
+    mapping: dict[int, int] = {}
+    for index, name in enumerate(getattr(model, "class_names", []) or []):
+        if name not in category_name_to_id:
+            raise ValueError(
+                f"YOLO26 class '{name}' is missing from COCO annotations. Available classes: {sorted(category_name_to_id)}"
+            )
+        mapping[index] = category_name_to_id[name]
+    return mapping
+
+
 def run_prediction_directory(
     input_dir: Path,
     checkpoint_path: Path,
     output_dir: Path,
     threshold: float,
+    backend: Backend = RFDETR_BACKEND,
 ) -> dict:
     if not input_dir.exists() or not input_dir.is_dir():
         raise typer.BadParameter(f"Input directory does not exist: {input_dir}")
@@ -346,7 +472,7 @@ def run_prediction_directory(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = create_model(checkpoint_path)
+    model = create_model(checkpoint_path, backend)
 
     category_names = {
         index: str(name)
@@ -392,14 +518,16 @@ def run_evaluation(
     split: str,
     threshold: float,
     iou_threshold: float,
-    model: RFDETR | None = None,
+    model: Predictor | None = None,
+    backend: Backend = RFDETR_BACKEND,
+    output_dir: Path | None = None,
 ) -> Path:
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
-    images_by_id, annotations_by_image, categories, label_to_category_id, _ = (
+    images_by_id, annotations_by_image, categories, coco_label_to_category_id, _ = (
         load_coco_annotations(annotation_path)
     )
 
-    output_dir = (
+    output_dir = output_dir or (
         checkpoint_path.parent / f"{checkpoint_path.stem}_{split_dir.name}_evaluation"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -413,12 +541,18 @@ def run_evaluation(
     false_negatives_dir.mkdir(parents=True, exist_ok=True)
 
     if model is None:
-        model = create_model(checkpoint_path)
-    else:
+        model = create_model(checkpoint_path, backend)
+    elif backend == RFDETR_BACKEND and hasattr(model, "optimize_for_inference"):
         model.optimize_for_inference()
     assert model is not None
 
     category_names = {category["id"]: category["name"] for category in categories}
+    label_to_category_id = build_label_to_category_id(
+        model=model,
+        categories=categories,
+        backend=backend,
+        fallback_mapping=coco_label_to_category_id,
+    )
 
     image_records = [images_by_id[image_id] for image_id in sorted(images_by_id)]
 
@@ -721,6 +855,7 @@ def run_evaluation(
     summary = {
         "checkpoint_path": str(checkpoint_path),
         "dataset_path": str(dataset_path),
+        "backend": backend,
         "split": split_dir.name,
         "image_count": len(per_image_rows),
         "threshold": threshold,
