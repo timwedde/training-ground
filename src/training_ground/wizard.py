@@ -38,6 +38,20 @@ from .upload import (
 DEFAULT_TRAINING_RESOLUTION = 372
 YOLO26_IMAGE_SIZE = 640
 BACK_CHOICE = "__back__"
+RFDETR_GPU_CHOICES = [
+    Choice(title="RTX  4080 (16GB)", value=(16, 1)),
+    Choice(title="RTX  4090 (24GB)", value=(32, 1)),
+    Choice(title="RTX  5090 (32GB)", value=(48, 1)),
+    Choice(title="RTX A6000 (48GB)", value=(64, 1)),
+    Choice(title="RTX  A100 (80GB)", value=(94, 1)),
+]
+YOLO26_GPU_CHOICES = [
+    Choice(title="RTX  4080 (16GB)", value=(56, 1)),
+    Choice(title="RTX  4090 (24GB)", value=(112, 1)),
+    Choice(title="RTX  5090 (32GB)", value=(168, 1)),
+    Choice(title="RTX A6000 (48GB)", value=(224, 1)),
+    Choice(title="RTX  A100 (80GB)", value=(330, 1)),
+]
 
 
 def _float32_to_bfloat16(fval: float, truncate: bool = False) -> int:
@@ -464,14 +478,13 @@ def run_wizard():
             continue
 
         if step == "gpu":
+            gpu_choices = (
+                YOLO26_GPU_CHOICES if backend == YOLO26_BACKEND else RFDETR_GPU_CHOICES
+            )
             batch_size_selection = questionary.select(
                 "Select GPU VRAM",
-                choices=[
-                    Choice(title="RTX  4080 (16GB)", value=(16, 1)),
-                    Choice(title="RTX  4090 (24GB)", value=(32, 1)),
-                    Choice(title="RTX  5090 (32GB)", value=(48, 1)),
-                    Choice(title="RTX A6000 (48GB)", value=(64, 1)),
-                    Choice(title="RTX  A100 (80GB)", value=(94, 1)),
+                choices=gpu_choices
+                + [
                     Choice(title="Custom", value="custom"),
                     Choice(title="Back", value=BACK_CHOICE),
                 ],
