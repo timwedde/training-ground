@@ -118,6 +118,16 @@ def predict_dir(
         "--model-size",
         help="Model size. Required for non-nano RF-DETR checkpoints.",
     ),
+    upload: bool = typer.Option(
+        False,
+        "--upload",
+        help="Upload processed samples to Roboflow.",
+    ),
+    project: str | None = typer.Option(
+        None,
+        "--project",
+        help="Roboflow project ID for upload.",
+    ),
 ):
     """
     Run predictions on every image in a directory tree.
@@ -129,6 +139,8 @@ def predict_dir(
         threshold=threshold,
         backend=normalize_backend(backend),
         model_size=model_size,
+        upload=upload,
+        project_name=project,
     )
 
     typer.echo(

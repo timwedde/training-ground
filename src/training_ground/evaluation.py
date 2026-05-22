@@ -477,6 +477,188 @@ def build_label_to_category_id(
     return mapping
 
 
+def resolve_roboflow_project(checkpoint_path: Path, project_name: str | None = None) -> str:
+    if project_name:
+        return project_name.split("/")[-1]
+
+    # Try parent directory for metadata
+    for parent in (checkpoint_path.parent, checkpoint_path.parent.parent):
+        for name in ("metadata.json", "upload_metadata.json"):
+            meta_path = parent / name
+            if meta_path.exists():
+                try:
+                    import json
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    stored_name = meta.get("dataset_name")
+                    if stored_name and stored_name.strip():
+                        project_name = stored_name.strip()
+                        typer.echo(f"Auto-resolved Roboflow project from metadata: {project_name}")
+                        break
+                except Exception:
+                    pass
+        if project_name:
+            break
+
+    if not project_name:
+        import roboflow
+        import questionary
+        from questionary import Choice
+        from concurrent.futures import ThreadPoolExecutor
+
+        roboflow.login()
+        rf = roboflow.Roboflow()
+        workspace = rf.workspace()
+
+        typer.echo("Fetching Roboflow projects...")
+        project_list = workspace.projects()
+        if not project_list:
+            raise typer.BadParameter("No projects found in your Roboflow workspace.")
+
+        def fetch_project(project_id: str):
+            try:
+                return workspace.project(project_id)
+            except Exception:
+                return None
+
+        project_ids = [proj.split("/")[-1] for proj in project_list]
+        projects = []
+        with ThreadPoolExecutor() as executor:
+            for proj in executor.map(fetch_project, project_ids):
+                if proj is not None:
+                    projects.append(proj)
+
+        projects.sort(key=lambda p: getattr(p, "updated", 0), reverse=True)
+
+        choices = [
+            Choice(title=p.id, value=p.id.split("/")[-1])
+            for p in projects
+        ]
+
+        project_name = questionary.select(
+            "Select Roboflow project for upload",
+            choices=choices,
+            instruction="(Enter to select)",
+        ).ask()
+
+        if not project_name:
+            raise typer.Abort()
+
+    return project_name.split("/")[-1]
+
+
+def generate_coco_json(
+    image_path: Path,
+    pred_items: list[dict],
+    width: int,
+    height: int,
+) -> dict:
+    categories = []
+    category_set = set()
+    annotations = []
+    annotation_id = 1
+
+    for item in pred_items:
+        cat_id = item["category_id"]
+        class_name = item["class_name"]
+
+        if cat_id not in category_set:
+            categories.append({
+                "id": cat_id,
+                "name": class_name,
+                "supercategory": "none"
+            })
+            category_set.add(cat_id)
+
+        bbox = item["bbox"]  # [x1, y1, x2, y2]
+        x_min, y_min, x_max, y_max = bbox
+        w = x_max - x_min
+        h = y_max - y_min
+
+        anno = {
+            "id": annotation_id,
+            "image_id": 1,
+            "category_id": cat_id,
+            "bbox": [x_min, y_min, w, h],
+            "area": w * h,
+            "iscrowd": 0,
+            "segmentation": []
+        }
+
+        mask = item["mask"]
+        if mask is not None:
+            import cv2
+            import numpy as np
+            contours, _ = cv2.findContours(
+                mask.astype(np.uint8),
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            polygons = []
+            for contour in contours:
+                contour = contour.reshape(-1, 2)
+                if len(contour) >= 3:
+                    polygons.append(contour.astype(float).reshape(-1).tolist())
+            anno["segmentation"] = polygons
+
+        annotations.append(anno)
+        annotation_id += 1
+
+    coco_data = {
+        "images": [
+            {
+                "id": 1,
+                "file_name": image_path.name,
+                "width": width,
+                "height": height
+            }
+        ],
+        "categories": categories,
+        "annotations": annotations
+    }
+    return coco_data
+
+
+def upload_single_image(
+    project: Any,
+    image_path: Path,
+    pred_items: list[dict],
+) -> tuple[str, bool, str | None]:
+    """
+    Helper function to upload a single image to Roboflow.
+    Runs inside a background thread.
+    Returns (image_name, success, error_message)
+    """
+    try:
+        has_masks = any(item["mask"] is not None for item in pred_items)
+        if has_masks:
+            import tempfile
+            from PIL import Image
+
+            with Image.open(image_path) as img:
+                width, height = img.size
+
+            coco_data = generate_coco_json(image_path, pred_items, width, height)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                anno_path = Path(temp_dir) / "_annotations.coco.json"
+                anno_path.write_text(json.dumps(coco_data), encoding="utf-8")
+
+                project.upload(
+                    image_path=str(image_path),
+                    annotation_path=str(anno_path),
+                    is_prediction=True,
+                )
+        else:
+            project.upload(
+                image_path=str(image_path),
+                is_prediction=True,
+            )
+        return image_path.name, True, None
+    except Exception as e:
+        return image_path.name, False, str(e)
+
+
+
 def run_prediction_directory(
     input_dir: Path,
     checkpoint_path: Path,
@@ -484,6 +666,8 @@ def run_prediction_directory(
     threshold: float,
     backend: Backend = RFDETR_BACKEND,
     model_size: str | None = None,
+    upload: bool = False,
+    project_name: str | None = None,
 ) -> dict:
     if not input_dir.exists() or not input_dir.is_dir():
         raise typer.BadParameter(f"Input directory does not exist: {input_dir}")
@@ -493,6 +677,16 @@ def run_prediction_directory(
         raise typer.BadParameter(
             "No supported images found. Expected JPEG, PNG, AVIF, or WEBP files."
         )
+
+    project = None
+    if upload:
+        import roboflow
+        roboflow.login()
+        rf = roboflow.Roboflow()
+        resolved_project_name = resolve_roboflow_project(checkpoint_path, project_name)
+        typer.echo(f"Connecting to Roboflow project: {resolved_project_name}")
+        workspace = rf.workspace()
+        project = workspace.project(resolved_project_name)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     model = create_model(checkpoint_path, backend, model_size=model_size)
@@ -505,27 +699,56 @@ def run_prediction_directory(
 
     fallback_count = 0
     saved_paths: list[Path] = []
+    futures = []
 
-    typer.echo(f"Running inference on {len(image_paths)} images from {input_dir}")
-    with typer.progressbar(image_paths, label="Running inference") as progress:
-        for image_path in progress:
-            relative_path = image_path.relative_to(input_dir)
-            requested_output_path = output_dir / relative_path
-            requested_output_path.parent.mkdir(parents=True, exist_ok=True)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    upload_executor = ThreadPoolExecutor(max_workers=8) if upload else None
 
-            detections = model.predict(str(image_path), threshold=threshold)
-            pred_items = build_pred_items(
-                detections, category_names, label_to_category_id
-            )
-            saved_path = render_prediction_overlay(
-                image_path=image_path,
-                output_path=requested_output_path,
-                pred_items=pred_items,
-                summary_text=f"Predictions: {len(pred_items)} | threshold {threshold:.2f}",
-            )
-            if saved_path != requested_output_path:
-                fallback_count += 1
-            saved_paths.append(saved_path)
+    try:
+        typer.echo(f"Running inference on {len(image_paths)} images from {input_dir}")
+        with typer.progressbar(image_paths, label="Running inference") as progress:
+            for image_path in progress:
+                relative_path = image_path.relative_to(input_dir)
+                requested_output_path = output_dir / relative_path
+                requested_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                detections = model.predict(str(image_path), threshold=threshold)
+                pred_items = build_pred_items(
+                    detections, category_names, label_to_category_id
+                )
+                saved_path = render_prediction_overlay(
+                    image_path=image_path,
+                    output_path=requested_output_path,
+                    pred_items=pred_items,
+                    summary_text=f"Predictions: {len(pred_items)} | threshold {threshold:.2f}",
+                )
+                if saved_path != requested_output_path:
+                    fallback_count += 1
+                saved_paths.append(saved_path)
+
+                if upload_executor is not None and project is not None:
+                    future = upload_executor.submit(
+                        upload_single_image,
+                        project,
+                        image_path,
+                        pred_items,
+                    )
+                    futures.append(future)
+    finally:
+        if upload_executor is not None:
+            upload_executor.shutdown(wait=False)
+
+    if futures:
+        typer.echo(f"\nUploading {len(futures)} images to Roboflow concurrently...")
+        success_count = 0
+        with typer.progressbar(as_completed(futures), length=len(futures), label="Uploading to Roboflow") as progress:
+            for future in progress:
+                img_name, success, err = future.result()
+                if success:
+                    success_count += 1
+                else:
+                    typer.echo(f"\nFailed to upload {img_name}: {err}", err=True)
+        typer.echo(f"Successfully uploaded {success_count} / {len(futures)} files.")
 
     return {
         "image_count": len(image_paths),

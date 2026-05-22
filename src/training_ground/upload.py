@@ -382,7 +382,7 @@ async def upload_training_run(
 ) -> int:
     artifacts = TrainingArtifacts(
         backend=RFDETR_BACKEND,
-        model_name=RFDETR_SEG_NANO_NAME,
+        model_name=RFDETR_SEG_MODELS["nano"][0],
         model_size=None,
         runs_dir=runs_dir,
         primary_checkpoint_path=checkpoint_ema_path,
