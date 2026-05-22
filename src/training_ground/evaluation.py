@@ -138,7 +138,7 @@ def create_rfdetr_predictor(
         typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
         _, constructor_name = RFDETR_SEG_MODELS[model_size]
         constructor = getattr(rfdetr_detr, constructor_name)
-        model = constructor(pretrain_weights=str(checkpoint_path), resolution=372)
+        model = constructor(pretrain_weights=str(checkpoint_path.resolve()), resolution=372)
     predictor = RFDETRPredictorAdapter(model)
     predictor.optimize_for_inference()
     return predictor

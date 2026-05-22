@@ -6,7 +6,7 @@ import typer
 from .analysis import analyze_dataset
 from .evaluation import run_evaluation, run_prediction_directory
 from .metrics_plotting import plot_training_metrics
-from .training_backends import YOLO26_BACKEND, normalize_backend
+from .training_backends import RFDETR_BACKEND, YOLO26_BACKEND, normalize_backend
 from .upload import (
     artifact_files_for_training,
     build_training_metadata,
@@ -102,14 +102,14 @@ def predict_dir(
     input_dir: Path = typer.Argument(..., exists=True, file_okay=False),
     output_dir: Path = typer.Argument(..., file_okay=False),
     checkpoint_path: Path = typer.Option(
-        "runs/yolo26-nano/weights/best.pt",
+        "best.pt",
         exists=True,
         dir_okay=False,
         help="Model checkpoint path.",
     ),
     threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
     backend: str = typer.Option(
-        YOLO26_BACKEND,
+        RFDETR_BACKEND,
         "--backend",
         help="Model backend: yolo26 or rfdetr.",
     ),
