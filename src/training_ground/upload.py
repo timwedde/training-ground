@@ -108,6 +108,50 @@ def read_upload_metadata(runs_dir: Path) -> dict[str, Any] | None:
     return None
 
 
+def resolve_onnx_artifact_path(
+    runs_dir: Path,
+    preferred_relative_path: str | None = None,
+    *,
+    default_filename: str,
+) -> Path:
+    if preferred_relative_path:
+        preferred_path = runs_dir / preferred_relative_path
+        if preferred_path.exists():
+            return preferred_path
+
+    default_path = runs_dir / default_filename
+    if default_path.exists():
+        return default_path
+
+    common_filenames = [
+        name
+        for name in (
+            preferred_relative_path,
+            "inference_model.onnx",
+            "model.onnx",
+        )
+        if name
+    ]
+    for filename in common_filenames:
+        candidate = runs_dir / filename
+        if candidate.exists():
+            return candidate
+
+    onnx_files = sorted(path for path in runs_dir.glob("*.onnx") if path.is_file())
+    if len(onnx_files) == 1:
+        return onnx_files[0]
+    if len(onnx_files) > 1:
+        prioritized_names = {"inference_model.onnx", "model.onnx"}
+        prioritized_files = [
+            path for path in onnx_files if path.name in prioritized_names
+        ]
+        if len(prioritized_files) == 1:
+            return prioritized_files[0]
+        return max(onnx_files, key=lambda path: path.stat().st_mtime)
+
+    return default_path
+
+
 def resolve_dataset_name(runs_dir: Path, dataset_name: str | None = None) -> str:
     if dataset_name:
         return dataset_name
@@ -156,6 +200,9 @@ def resolve_training_artifacts(
     metadata = read_upload_metadata(runs_dir)
 
     if normalized_backend == RFDETR_BACKEND:
+        preferred_onnx_path = (metadata or {}).get("onnx_path")
+        if not isinstance(preferred_onnx_path, str):
+            preferred_onnx_path = None
         artifacts = TrainingArtifacts(
             backend=RFDETR_BACKEND,
             model_name=str(
@@ -174,7 +221,11 @@ def resolve_training_artifacts(
                     )
                 )
             ),
-            onnx_path=runs_dir / "inference_model.onnx",
+            onnx_path=resolve_onnx_artifact_path(
+                runs_dir,
+                preferred_onnx_path,
+                default_filename="inference_model.onnx",
+            ),
         )
         return artifacts, metadata
 
@@ -199,7 +250,13 @@ def resolve_training_artifacts(
         eval_dir=Path(
             runs_dir / str((metadata or {}).get("eval_dir", "best_test_evaluation"))
         ),
-        onnx_path=runs_dir / "model.onnx",
+        onnx_path=resolve_onnx_artifact_path(
+            runs_dir,
+            (metadata or {}).get("onnx_path")
+            if isinstance((metadata or {}).get("onnx_path"), str)
+            else None,
+            default_filename="model.onnx",
+        ),
     )
     return artifacts, metadata
 

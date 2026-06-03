@@ -30,6 +30,7 @@ from .training_backends import (
 from .upload import (
     artifact_files_for_training,
     build_training_metadata,
+    resolve_onnx_artifact_path,
     slugify_dataset_name,
     upload_artifact_bundle,
     write_upload_metadata,
@@ -231,11 +232,17 @@ def train_rfdetr_seg_nano(
     runs_dir = Path("runs")
     typer.echo("Exporting model to ONNX...")
     model.export(output_dir=str(runs_dir))
-    onnx_path = runs_dir / "inference_model.onnx"
-    onnx_model = onnx.load(onnx_path)
+    exported_onnx_path = resolve_onnx_artifact_path(
+        runs_dir,
+        default_filename="inference_model.onnx",
+    )
+    onnx_model = onnx.load(exported_onnx_path)
     onnx_model_simp, check = simplify(onnx_model)
     assert check, "Simplified ONNX model could not be validated"
-    onnx.save(onnx_model_simp, onnx_path)
+    onnx.save(onnx_model_simp, exported_onnx_path)
+    onnx_path = runs_dir / "inference_model.onnx"
+    if exported_onnx_path.resolve() != onnx_path.resolve():
+        shutil.copy2(exported_onnx_path, onnx_path)
 
     metrics_path = runs_dir / "metrics.csv"
     typer.echo("Generating training metrics plots...")
