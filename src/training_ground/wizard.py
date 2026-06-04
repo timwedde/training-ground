@@ -211,6 +211,26 @@ def train_rfdetr_seg_nano(
     mp.set_sharing_strategy("file_system")
     model_name, constructor_name = RFDETR_SEG_MODELS[model_size]
     model = getattr(rfdetr_detr, constructor_name)()
+    aug_config: dict[str, object] = {}
+    num_workers = 2
+    prefetch_factor = 1
+    persistent_workers = False
+    pin_memory = False
+    typer.echo(
+        "RF-DETR augmentation disabled: "
+        f"aug_config={aug_config}, "
+        "multi_scale=False, "
+        "expanded_scales=False, "
+        "do_random_resize_via_padding=False, "
+        'augmentation_backend="cpu"'
+    )
+    typer.echo(
+        "RF-DETR dataloader: "
+        f"workers={num_workers}, "
+        f"prefetch_factor={prefetch_factor}, "
+        f"persistent_workers={persistent_workers}, "
+        f"pin_memory={pin_memory}"
+    )
     model.train(
         dataset_dir=str(dataset_path),
         epochs=100,
@@ -220,10 +240,15 @@ def train_rfdetr_seg_nano(
         early_stopping=True,
         early_stopping_patience=3,
         progress_bar=True,
-        num_workers=8,
-        prefetch_factor=2,
-        persistent_workers=True,
-        pin_memory=False,
+        aug_config=aug_config,
+        multi_scale=False,
+        expanded_scales=False,
+        do_random_resize_via_padding=False,
+        augmentation_backend="cpu",
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
+        pin_memory=pin_memory,
         num_queries=50,
         num_select=20,
         output_dir="runs",
