@@ -250,12 +250,15 @@ def train_rfdetr_seg_nano(
         f"persistent_workers={persistent_workers}, "
         f"pin_memory={pin_memory}"
     )
+    train_kwargs = {}
+    if model_size == "nano":
+        train_kwargs["resolution"] = DEFAULT_TRAINING_RESOLUTION
+
     model.train(
         dataset_dir=str(dataset_path),
         epochs=100,
         batch_size=batch_size,
         grad_accum_steps=grad_accum_steps,
-        resolution=DEFAULT_TRAINING_RESOLUTION,
         early_stopping=True,
         early_stopping_patience=3,
         progress_bar=True,
@@ -271,6 +274,7 @@ def train_rfdetr_seg_nano(
         num_queries=50,
         num_select=20,
         output_dir="runs",
+        **train_kwargs,
     )
 
     runs_dir = Path("runs")
