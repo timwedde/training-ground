@@ -130,15 +130,39 @@ class DetectionBatch:
 
 
 def create_rfdetr_predictor(
-    checkpoint_path: Path, model=None, model_size: str = "nano"
+    checkpoint_path: Path, model=None, model_size: str | None = None
 ) -> Predictor:
     if model is None:
+        import rfdetr
         import rfdetr.detr as rfdetr_detr
 
         typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
-        _, constructor_name = RFDETR_SEG_MODELS[model_size]
-        constructor = getattr(rfdetr_detr, constructor_name)
-        model = constructor(pretrain_weights=str(checkpoint_path.resolve()), resolution=372)
+        try:
+            model = rfdetr.from_checkpoint(checkpoint_path.resolve())
+        except ValueError as exc:
+            if "Could not infer model class from checkpoint" not in str(exc):
+                raise
+
+            legacy_model_size = model_size or "nano"
+            typer.echo(
+                "Checkpoint does not contain self-describing RF-DETR model metadata; "
+                f"falling back to --model-size={legacy_model_size}."
+            )
+            _, constructor_name = RFDETR_SEG_MODELS[legacy_model_size]
+            constructor = getattr(rfdetr_detr, constructor_name)
+            model = constructor(pretrain_weights=str(checkpoint_path.resolve()))
+
+        model_config = getattr(model, "model_config", None)
+        if model_config is not None:
+            typer.echo(
+                "RF-DETR checkpoint architecture: "
+                f"model={type(model).__name__}, "
+                f"resolution={getattr(model_config, 'resolution', 'unknown')}, "
+                "mask_downsample_ratio="
+                f"{getattr(model_config, 'mask_downsample_ratio', 'unknown')}, "
+                f"num_queries={getattr(model_config, 'num_queries', 'unknown')}, "
+                f"num_select={getattr(model_config, 'num_select', 'unknown')}"
+            )
     predictor = RFDETRPredictorAdapter(model)
     predictor.optimize_for_inference()
     return predictor
@@ -158,7 +182,7 @@ def create_model(
         return create_yolo26_predictor(checkpoint_path)
     if backend == RFDETR_BACKEND:
         return create_rfdetr_predictor(
-            checkpoint_path, model=model, model_size=model_size or "nano"
+            checkpoint_path, model=model, model_size=model_size
         )
     raise ValueError(f"Unsupported backend: {backend}")
 

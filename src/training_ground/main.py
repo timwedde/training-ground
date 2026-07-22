@@ -72,7 +72,7 @@ def evaluate(
     model_size: str | None = typer.Option(
         None,
         "--model-size",
-        help="Model size. Required for non-nano RF-DETR checkpoints.",
+        help="Model size fallback for legacy RF-DETR checkpoints without embedded model metadata.",
     ),
 ):
     """
@@ -116,7 +116,7 @@ def predict_dir(
     model_size: str | None = typer.Option(
         None,
         "--model-size",
-        help="Model size. Required for non-nano RF-DETR checkpoints.",
+        help="Model size fallback for legacy RF-DETR checkpoints without embedded model metadata.",
     ),
     upload: bool = typer.Option(
         False,
