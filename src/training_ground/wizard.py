@@ -91,23 +91,6 @@ def fetch_project_info(data):
     return project, project.versions()
 
 
-def _patch_rfdetr_training_pretrain_loader():
-    from rfdetr.models.weights import load_pretrain_weights
-    from rfdetr.training.module_model import RFDETRModelModule
-
-    if getattr(RFDETRModelModule._load_pretrain_weights, "__name__", "") == (
-        "_load_pretrain_weights_with_pe_interpolation"
-    ):
-        return
-
-    def _load_pretrain_weights_with_pe_interpolation(self) -> None:
-        load_pretrain_weights(self.model, self.model_config)
-
-    RFDETRModelModule._load_pretrain_weights = (
-        _load_pretrain_weights_with_pe_interpolation
-    )
-
-
 def _copy_or_link_image(source_path: Path, target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists() or target_path.is_symlink():
@@ -243,11 +226,11 @@ def train_rfdetr_seg_nano(
     from onnxsim import simplify
 
     mp.set_sharing_strategy("file_system")
-    _patch_rfdetr_training_pretrain_loader()
-
     model_name, constructor_name = RFDETR_SEG_MODELS[model_size]
     model = getattr(rfdetr_detr, constructor_name)(
-        mask_downsample_ratio=mask_downsample_ratio
+        mask_downsample_ratio=mask_downsample_ratio,
+        num_queries=50,
+        num_select=20,
     )
     aug_config: dict[str, object] = {}
     num_workers = 2
@@ -295,8 +278,6 @@ def train_rfdetr_seg_nano(
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
         pin_memory=pin_memory,
-        num_queries=50,
-        num_select=20,
         output_dir="runs",
         **train_kwargs,
     )

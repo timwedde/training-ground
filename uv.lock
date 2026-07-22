@@ -9,24 +9,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "accelerate"
-version = "1.14.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "huggingface-hub" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/75/94cd5d389649578aca399e5aa822637eec18319a1dadc400ffe2f9a7493f/accelerate-1.14.0.tar.gz", hash = "sha256:41b9c4377a54e0b460a959b0defa1b736e4ca0a2373252d9a539964c2afe3c8d", size = 412167, upload-time = "2026-06-11T13:45:52.326Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/db/253133d7e7cb40d3af384bb2f5c0b4a2b7fdcffbc95c688cc67a20a3c103/accelerate-1.14.0-py3-none-any.whl", hash = "sha256:e94390c2863b873be18f623f9df48a0d8fe5eff13ea7f1a00092b0a7904888c6", size = 389246, upload-time = "2026-06-11T13:45:50.477Z" },
-]
-
-[[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1359,27 +1341,6 @@ wheels = [
 ]
 
 [[package]]
-name = "peft"
-version = "0.19.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "huggingface-hub" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch" },
-    { name = "tqdm" },
-    { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/86/cf/037f1e3d5186496c05513a6754639e2dab3038a05f384284d49a9bd06a2d/peft-0.19.1.tar.gz", hash = "sha256:0d97542fe96dcdaa20d3b81c06f26f988618f416a73544ab23c3618ccb674a40", size = 763738, upload-time = "2026-04-16T15:46:45.105Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/b6/f54d676ed93cc2dd2234c3b172ea9c8c3d7d29361e66b1b23dec57a67465/peft-0.19.1-py3-none-any.whl", hash = "sha256:2113f72a81621b5913ef28f9022204c742df111890c5f49d812716a4a301e356", size = 680692, upload-time = "2026-04-16T15:46:42.886Z" },
-]
-
-[[package]]
 name = "pi-heif"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1795,11 +1756,11 @@ wheels = [
 
 [[package]]
 name = "pydeprecate"
-version = "0.5.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/8c/a2b828824b6a5d7826a3af3948b8a312064c28ef2a3312a86b003bbbe21f/pydeprecate-0.5.0.tar.gz", hash = "sha256:d4dad1a44673257385674276e08415da626f002ea12fe73cf1d70d391b63f936", size = 61364, upload-time = "2026-02-23T22:35:49.723Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/1e/b069ea704e42fefeb523835ba3d712347ff672743e5fa9428f4201525328/pydeprecate-0.9.0.tar.gz", hash = "sha256:ed49a36506f63a8d4ae84ffedff1e2879733d536c7a6aaafdf8bfcd39520059b", size = 151667, upload-time = "2026-06-05T19:51:17.43Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/40/ff4ca100d6d698ce17cdc82799a4b365c3f73c1746a440bba543a1c8a4db/pydeprecate-0.5.0-py3-none-any.whl", hash = "sha256:1668d1e152f6ec6127a8ce8bd501215a4c3d756e46ced542d0222f1df2c78eca", size = 38022, upload-time = "2026-02-23T22:35:48.512Z" },
+    { url = "https://files.pythonhosted.org/packages/47/87/a155f16c1c17adccaa2ed2256484fe1c6ad37b925e8e39695ed8860bc0b5/pydeprecate-0.9.0-py3-none-any.whl", hash = "sha256:c9501dae1a2567a3c7f7b04221ad5a97d1ad972a02ddb729a04299b435fedd7c", size = 102725, upload-time = "2026-06-05T19:51:16.235Z" },
 ]
 
 [[package]]
@@ -2041,10 +2002,10 @@ wheels = [
 
 [[package]]
 name = "rfdetr"
-version = "1.6.5"
+version = "1.8.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "peft" },
+    { name = "numpy" },
     { name = "pydantic" },
     { name = "pydeprecate" },
     { name = "requests" },
@@ -2054,9 +2015,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/58/8e2e696aa0ff5c6c1449ba3163e72f6386ae063b380fef382d70b2a72eeb/rfdetr-1.6.5.tar.gz", hash = "sha256:c42224bbb7a400f90d47b14998fc45538cc08069a48932d03b04cc6c72342eaa", size = 218701, upload-time = "2026-04-22T19:17:50.994Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/24/6396e220701e3eb7a2cc09a0b9552f6dffe8b94a7421bd5e21cea3060285/rfdetr-1.8.3.tar.gz", hash = "sha256:a6306654a1566f126cb1bc511d5f2f87f04fb3b98b50af4bc3d7e9743766eafc", size = 359808, upload-time = "2026-06-29T07:53:38.082Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/ab/b2f58afc3e3b7bfb5a1157f508d591d021e9aab43c9384f23581797f1bf9/rfdetr-1.6.5-py3-none-any.whl", hash = "sha256:c364d51896066fb386f24c51004e1f79389ed5fe49c847d8bd503df1ad0bb0a9", size = 253165, upload-time = "2026-04-22T19:17:49.399Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/a3/0554e5534e2e9a1118540f713d1c22123018539326b017dceed9fd7f48e0/rfdetr-1.8.3-py3-none-any.whl", hash = "sha256:345e55b897ce590464e64ae4750e60b668436cbc6bf58d87f438895a93c3e9a4", size = 406294, upload-time = "2026-06-29T07:53:36.561Z" },
 ]
 
 [[package]]
@@ -2198,7 +2159,7 @@ wheels = [
 
 [[package]]
 name = "supervision"
-version = "0.27.0.post2"
+version = "0.29.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "defusedxml" },
@@ -2212,9 +2173,9 @@ dependencies = [
     { name = "scipy" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/9c/46d056999c5ea6cf8dc10451163601867247bc1378b69b64c987bd44a336/supervision-0.27.0.post2.tar.gz", hash = "sha256:be1283ef2000a593a4568d83289344af95befb8b847a954d5f099a43cb253dc9", size = 186135, upload-time = "2026-03-14T08:12:10.973Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/ec/293e5693ef5f32b54533b680b909a96976925adbb5c3bbfbf53b199182e0/supervision-0.29.1.tar.gz", hash = "sha256:2db9f968a3253e6778573c39bbb8a8e3fa586ece6c98fbdc41d8fd8508eda5af", size = 246950, upload-time = "2026-06-23T19:55:37.717Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/34/a138692ced038c135d1a45b73a433c89c57cad2eac9dd55bb38d9de89783/supervision-0.27.0.post2-py3-none-any.whl", hash = "sha256:713a341a563774d6a4b017787baa94f8698a9ea1de57155093d70de3a5007941", size = 217448, upload-time = "2026-03-14T08:12:09.279Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/7c/ed95842ac2e323f6a0fcaf5a5bb56b62c0596a4b177872da9f7605ca1ceb/supervision-0.29.1-py3-none-any.whl", hash = "sha256:8518f6bad0d19ff7a959d1b9eb1b54517aded814aa7f237598fed0e3a772c281", size = 280218, upload-time = "2026-06-23T19:55:36.114Z" },
 ]
 
 [[package]]
@@ -2379,7 +2340,7 @@ requires-dist = [
     { name = "pytorch-lightning", specifier = ">=2.6.1" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "questionary", specifier = ">=2.1.1" },
-    { name = "rfdetr", specifier = "==1.6.5" },
+    { name = "rfdetr", specifier = "==1.8.3" },
     { name = "roboflow", specifier = ">=1.2.16" },
     { name = "typer", specifier = ">=0.24.1" },
     { name = "ultralytics", specifier = ">=8.4.26" },
