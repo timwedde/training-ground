@@ -37,6 +37,8 @@ from .upload import (
 )
 
 DEFAULT_TRAINING_RESOLUTION = 372
+DEFAULT_BACKEND = RFDETR_BACKEND
+DEFAULT_RFDETR_MODEL_SIZE = "medium"
 YOLO26_IMAGE_SIZE = 640
 BACK_CHOICE = "__back__"
 RFDETR_GPU_CHOICES = [
@@ -509,7 +511,7 @@ def run_wizard():
                     Choice(title=RFDETR_SEG_MODEL_LABEL, value=RFDETR_BACKEND),
                     Choice(title="Back", value=BACK_CHOICE),
                 ],
-                default=backend or YOLO26_BACKEND,
+                default=backend or DEFAULT_BACKEND,
                 instruction="(Select Back to return)",
             ).ask()
             if selected == BACK_CHOICE:
@@ -546,7 +548,7 @@ def run_wizard():
                         )
                     ]
                     + [Choice(title="Back", value=BACK_CHOICE)],
-                    default=model_size or "nano",
+                    default=model_size or DEFAULT_RFDETR_MODEL_SIZE,
                     instruction="(Select Back to return)",
                 ).ask()
             if selected == BACK_CHOICE:
