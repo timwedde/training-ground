@@ -7,6 +7,8 @@
 
 The wizard keeps the same high-level flow for both backends: choose a Roboflow project/version, choose the training backend, choose GPU sizing, train, export ONNX, plot metrics, evaluate, and upload artifacts.
 
+For RF-DETR segmentation, the wizard also asks for the mask downsample ratio. The default ratio `4` produces masks at one quarter of the input resolution per axis. Ratio `2` doubles linear mask resolution and uses roughly four times as many mask-head pixels; ratio `1` produces full-resolution masks and uses roughly sixteen times as many mask-head pixels as ratio `4`.
+
 ## Install `uv`
 
 ```bash

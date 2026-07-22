@@ -46,6 +46,20 @@ RFDETR_GPU_CHOICES = [
     Choice(title="RTX A6000 (48GB)", value=(64, 1)),
     Choice(title="RTX  A100 (80GB)", value=(94, 1)),
 ]
+RFDETR_MASK_DOWNSAMPLE_RATIO_CHOICES = [
+    Choice(
+        title="4 (default, quarter-resolution masks)",
+        value=4,
+    ),
+    Choice(
+        title="2 (high quality, half-resolution masks; ~4x mask-head pixels)",
+        value=2,
+    ),
+    Choice(
+        title="1 (full-resolution masks; ~16x mask-head pixels)",
+        value=1,
+    ),
+]
 YOLO26_GPU_CHOICES = [
     Choice(title="RTX  4080 (16GB)", value=(16, 1)),
     Choice(title="RTX  4090 (24GB)", value=(32, 1)),
@@ -220,6 +234,7 @@ def train_rfdetr_seg_nano(
     batch_size: int,
     grad_accum_steps: int,
     model_size: str = "nano",
+    mask_downsample_ratio: int = 4,
 ) -> TrainingArtifacts:
     import rfdetr.detr as rfdetr_detr
     import torch.multiprocessing as mp
@@ -229,7 +244,9 @@ def train_rfdetr_seg_nano(
     _patch_rfdetr_training_pretrain_loader()
 
     model_name, constructor_name = RFDETR_SEG_MODELS[model_size]
-    model = getattr(rfdetr_detr, constructor_name)()
+    model = getattr(rfdetr_detr, constructor_name)(
+        mask_downsample_ratio=mask_downsample_ratio
+    )
     aug_config: dict[str, object] = {}
     num_workers = 2
     prefetch_factor = 1
@@ -249,6 +266,11 @@ def train_rfdetr_seg_nano(
         f"prefetch_factor={prefetch_factor}, "
         f"persistent_workers={persistent_workers}, "
         f"pin_memory={pin_memory}"
+    )
+    typer.echo(
+        "RF-DETR mask output: "
+        f"downsample_ratio={mask_downsample_ratio}, "
+        f"linear_resolution=1/{mask_downsample_ratio} of training input"
     )
     train_kwargs = {}
     if model_size == "nano":
@@ -322,6 +344,7 @@ def train_rfdetr_seg_nano(
         metrics_path=metrics_path,
         eval_dir=eval_dir,
         onnx_path=onnx_path,
+        mask_downsample_ratio=mask_downsample_ratio,
     )
 
 
@@ -436,6 +459,7 @@ def run_wizard():
     version = None
     backend = None
     model_size = None
+    mask_downsample_ratio = 4
     batch_size = None
     grad_accum_steps = 1
 
@@ -529,6 +553,21 @@ def run_wizard():
                 step = "backend"
                 continue
             model_size = selected
+            step = "mask_ratio" if backend == RFDETR_BACKEND else "gpu"
+            continue
+
+        if step == "mask_ratio":
+            selected = questionary.select(
+                "Select RF-DETR mask downsample ratio",
+                choices=RFDETR_MASK_DOWNSAMPLE_RATIO_CHOICES
+                + [Choice(title="Back", value=BACK_CHOICE)],
+                default=mask_downsample_ratio,
+                instruction="(Lower ratios improve mask resolution and use more VRAM)",
+            ).ask()
+            if selected == BACK_CHOICE:
+                step = "model_size"
+                continue
+            mask_downsample_ratio = int(selected)
             step = "gpu"
             continue
 
@@ -546,7 +585,7 @@ def run_wizard():
                 instruction="(Select Back to return)",
             ).ask()
             if batch_size_selection == BACK_CHOICE:
-                step = "model_size"
+                step = "mask_ratio" if backend == RFDETR_BACKEND else "model_size"
                 continue
 
             if batch_size_selection == "custom":
@@ -577,6 +616,7 @@ def run_wizard():
             batch_size=batch_size,
             grad_accum_steps=grad_accum_steps,
             model_size=model_size,
+            mask_downsample_ratio=mask_downsample_ratio,
         )
     else:
         artifacts = train_yolo26_seg(

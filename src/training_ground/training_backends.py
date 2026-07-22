@@ -54,6 +54,7 @@ class TrainingArtifacts:
     metrics_path: Path
     eval_dir: Path
     onnx_path: Path
+    mask_downsample_ratio: int | None = None
 
 
 def normalize_backend(value: str) -> Backend:

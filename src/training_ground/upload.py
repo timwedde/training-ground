@@ -78,6 +78,8 @@ def build_training_metadata(
         "eval_dir": _relative_to_runs_dir(artifacts.eval_dir, artifacts.runs_dir),
         "onnx_path": _relative_to_runs_dir(artifacts.onnx_path, artifacts.runs_dir),
     }
+    if artifacts.mask_downsample_ratio is not None:
+        metadata["mask_downsample_ratio"] = artifacts.mask_downsample_ratio
     return metadata
 
 
