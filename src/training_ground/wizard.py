@@ -243,7 +243,8 @@ def train_rfdetr_seg_nano(
         "multi_scale=False, "
         "expanded_scales=False, "
         "do_random_resize_via_padding=False, "
-        'augmentation_backend="cpu"'
+        'augmentation_backend="cpu" '
+        "(Albumentations is used only for the required annotation-aware resize)"
     )
     typer.echo(
         "RF-DETR dataloader: "

@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "rfdetr==1.8.3",
+    "albumentations>=1.4.24,<3.0.0",
     "ultralytics>=8.4.26",
     "typer>=0.24.1",
     "roboflow>=1.2.16",
