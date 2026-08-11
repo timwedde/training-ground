@@ -3,11 +3,21 @@ from pathlib import Path
 from typing import Literal, cast
 
 Backend = Literal["rfdetr", "yolo26"]
+Task = Literal["boxes", "segmentation"]
 
 RFDETR_BACKEND: Backend = "rfdetr"
 YOLO26_BACKEND: Backend = "yolo26"
+BOX_TASK: Task = "boxes"
+SEGMENTATION_TASK: Task = "segmentation"
 RFDETR_MODEL_FAMILY = "RF-DETR"
+RFDETR_BOX_MODEL_LABEL = "RF-DETR"
 RFDETR_SEG_MODEL_LABEL = "RF-DETR Seg"
+RFDETR_BOX_MODELS = {
+    "nano": ("RF-DETR Nano", "RFDETRNano"),
+    "small": ("RF-DETR Small", "RFDETRSmall"),
+    "medium": ("RF-DETR Medium", "RFDETRMedium"),
+    "large": ("RF-DETR Large", "RFDETRLarge"),
+}
 RFDETR_SEG_MODELS = {
     "nano": ("RF-DETR Seg Nano", "RFDETRSegNano"),
     "small": ("RF-DETR Seg Small", "RFDETRSegSmall"),
@@ -18,6 +28,13 @@ RFDETR_SEG_MODELS = {
 }
 YOLO26_MODEL_FAMILY = "YOLO26"
 
+YOLO26_BOX_MODELS = {
+    "nano": "yolo26n.pt",
+    "small": "yolo26s.pt",
+    "medium": "yolo26m.pt",
+    "large": "yolo26l.pt",
+    "xlarge": "yolo26x.pt",
+}
 YOLO26_SEG_MODELS = {
     "nano": "yolo26n-seg.pt",
     "small": "yolo26s-seg.pt",
@@ -46,6 +63,7 @@ RFDETR_SIZE_LABELS = {
 @dataclass
 class TrainingArtifacts:
     backend: Backend
+    task: Task
     model_name: str
     model_size: str | None
     runs_dir: Path
@@ -64,5 +82,20 @@ def normalize_backend(value: str) -> Backend:
     return cast(Backend, normalized)
 
 
-def yolo26_run_name(model_size: str) -> str:
-    return f"yolo26-{model_size}"
+def normalize_task(value: str) -> Task:
+    normalized = value.strip().lower()
+    if normalized not in {BOX_TASK, SEGMENTATION_TASK}:
+        raise ValueError(f"Unsupported task: {value}")
+    return cast(Task, normalized)
+
+
+def rfdetr_models_for_task(task: Task) -> dict[str, tuple[str, str]]:
+    return RFDETR_BOX_MODELS if task == BOX_TASK else RFDETR_SEG_MODELS
+
+
+def yolo26_models_for_task(task: Task) -> dict[str, str]:
+    return YOLO26_BOX_MODELS if task == BOX_TASK else YOLO26_SEG_MODELS
+
+
+def yolo26_run_name(task: Task, model_size: str) -> str:
+    return f"yolo26-{task}-{model_size}"

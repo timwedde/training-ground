@@ -6,7 +6,13 @@ import typer
 from .analysis import analyze_dataset
 from .evaluation import run_evaluation, run_prediction_directory
 from .metrics_plotting import plot_training_metrics
-from .training_backends import RFDETR_BACKEND, YOLO26_BACKEND, normalize_backend
+from .training_backends import (
+    RFDETR_BACKEND,
+    SEGMENTATION_TASK,
+    YOLO26_BACKEND,
+    normalize_backend,
+    normalize_task,
+)
 from .upload import (
     artifact_files_for_training,
     build_training_metadata,
@@ -59,7 +65,9 @@ def analyze(dataset_path: Path):
 def evaluate(
     dataset_path: Path = typer.Argument(..., exists=True, file_okay=False),
     checkpoint_path: Path = typer.Argument(
-        "runs/yolo26-nano/weights/best.pt", exists=True, dir_okay=False
+        "runs/yolo26-segmentation-nano/weights/best.pt",
+        exists=True,
+        dir_okay=False,
     ),
     split: str = typer.Option("test", help="Dataset split: train, valid, or test."),
     threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
@@ -74,6 +82,11 @@ def evaluate(
         "--model-size",
         help="Model size fallback for legacy RF-DETR checkpoints without embedded model metadata.",
     ),
+    task: str = typer.Option(
+        SEGMENTATION_TASK,
+        "--task",
+        help="Annotation type: boxes or segmentation.",
+    ),
 ):
     """
     Evaluate a model checkpoint on a dataset split.
@@ -86,6 +99,7 @@ def evaluate(
         iou_threshold=iou_threshold,
         backend=normalize_backend(backend),
         model_size=model_size,
+        task=normalize_task(task),
     )
 
     typer.echo(f"Evaluation complete. Artifacts written to {output_dir}")
@@ -118,6 +132,11 @@ def predict_dir(
         "--model-size",
         help="Model size fallback for legacy RF-DETR checkpoints without embedded model metadata.",
     ),
+    task: str = typer.Option(
+        SEGMENTATION_TASK,
+        "--task",
+        help="Model task: boxes or segmentation.",
+    ),
     upload: bool = typer.Option(
         False,
         "--upload",
@@ -139,6 +158,7 @@ def predict_dir(
         threshold=threshold,
         backend=normalize_backend(backend),
         model_size=model_size,
+        task=normalize_task(task),
         upload=upload,
         project_name=project,
     )
@@ -167,12 +187,17 @@ def upload(
         "--backend",
         help="Training backend: yolo26 or rfdetr.",
     ),
+    task: str = typer.Option(
+        SEGMENTATION_TASK,
+        "--task",
+        help="Training task: boxes or segmentation. Stored metadata takes precedence.",
+    ),
 ):
     """
     Upload a training run to GCP.
     """
     artifacts, stored_metadata = resolve_training_artifacts(
-        runs_dir, normalize_backend(backend)
+        runs_dir, normalize_backend(backend), normalize_task(task)
     )
     for path in (
         artifacts.primary_checkpoint_path,

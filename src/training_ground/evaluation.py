@@ -17,9 +17,11 @@ from .evaluation_plots import write_evaluation_plots
 from .geometry import bbox_iou, mask_iou, xywh_to_xyxy, xyxy_to_xywh
 from .training_backends import (
     RFDETR_BACKEND,
-    RFDETR_SEG_MODELS,
+    SEGMENTATION_TASK,
     YOLO26_BACKEND,
     Backend,
+    Task,
+    rfdetr_models_for_task,
 )
 
 OVERLAY_ALPHA = 0.28
@@ -130,7 +132,10 @@ class DetectionBatch:
 
 
 def create_rfdetr_predictor(
-    checkpoint_path: Path, model=None, model_size: str | None = None
+    checkpoint_path: Path,
+    model=None,
+    model_size: str | None = None,
+    task: Task = SEGMENTATION_TASK,
 ) -> Predictor:
     if model is None:
         import rfdetr
@@ -148,7 +153,7 @@ def create_rfdetr_predictor(
                 "Checkpoint does not contain self-describing RF-DETR model metadata; "
                 f"falling back to --model-size={legacy_model_size}."
             )
-            _, constructor_name = RFDETR_SEG_MODELS[legacy_model_size]
+            _, constructor_name = rfdetr_models_for_task(task)[legacy_model_size]
             constructor = getattr(rfdetr_detr, constructor_name)
             model = constructor(pretrain_weights=str(checkpoint_path.resolve()))
 
@@ -177,12 +182,13 @@ def create_model(
     backend: Backend,
     model=None,
     model_size: str | None = None,
+    task: Task = SEGMENTATION_TASK,
 ) -> Predictor:
     if backend == YOLO26_BACKEND:
         return create_yolo26_predictor(checkpoint_path)
     if backend == RFDETR_BACKEND:
         return create_rfdetr_predictor(
-            checkpoint_path, model=model, model_size=model_size
+            checkpoint_path, model=model, model_size=model_size, task=task
         )
     raise ValueError(f"Unsupported backend: {backend}")
 
@@ -653,9 +659,9 @@ def upload_single_image(
     Returns (image_name, success, error_message)
     """
     try:
-        has_masks = any(item["mask"] is not None for item in pred_items)
-        if has_masks:
+        if pred_items:
             import tempfile
+
             from PIL import Image
 
             with Image.open(image_path) as img:
@@ -690,6 +696,7 @@ def run_prediction_directory(
     threshold: float,
     backend: Backend = RFDETR_BACKEND,
     model_size: str | None = None,
+    task: Task = SEGMENTATION_TASK,
     upload: bool = False,
     project_name: str | None = None,
 ) -> dict:
@@ -713,7 +720,7 @@ def run_prediction_directory(
         project = workspace.project(resolved_project_name)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = create_model(checkpoint_path, backend, model_size=model_size)
+    model = create_model(checkpoint_path, backend, model_size=model_size, task=task)
 
     category_names = {
         index: str(name)
@@ -792,6 +799,7 @@ def run_evaluation(
     backend: Backend = RFDETR_BACKEND,
     output_dir: Path | None = None,
     model_size: str | None = None,
+    task: Task = SEGMENTATION_TASK,
 ) -> Path:
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
     images_by_id, annotations_by_image, categories, coco_label_to_category_id, _ = (
@@ -816,6 +824,7 @@ def run_evaluation(
             checkpoint_path,
             backend,
             model_size=model_size,
+            task=task,
         )
     elif backend == RFDETR_BACKEND and hasattr(model, "optimize_for_inference"):
         model.optimize_for_inference()
@@ -872,7 +881,7 @@ def run_evaluation(
                         "score": item["score"],
                     }
                 )
-                if item["mask"] is not None:
+                if task == SEGMENTATION_TASK and item["mask"] is not None:
                     segm_results.append(
                         {
                             "image_id": image_id,
@@ -892,8 +901,14 @@ def run_evaluation(
                         "category_id": annotation["category_id"],
                         "class_name": category_names[annotation["category_id"]],
                         "bbox": xywh_to_xyxy(annotation["bbox"]),
-                        "mask": decode_segmentation(
-                            annotation.get("segmentation"), image_height, image_width
+                        "mask": (
+                            decode_segmentation(
+                                annotation.get("segmentation"),
+                                image_height,
+                                image_width,
+                            )
+                            if task == SEGMENTATION_TASK
+                            else None
                         ),
                     }
                 )
@@ -920,7 +935,11 @@ def run_evaluation(
                     ):
                         continue
 
-                    if pred_item["mask"] is not None and gt_item["mask"] is not None:
+                    if (
+                        task == SEGMENTATION_TASK
+                        and pred_item["mask"] is not None
+                        and gt_item["mask"] is not None
+                    ):
                         overlap = mask_iou(pred_item["mask"], gt_item["mask"])
                     else:
                         overlap = bbox_iou(pred_item["bbox"], gt_item["bbox"])
@@ -1021,10 +1040,9 @@ def run_evaluation(
                     )
 
     coco_gt = COCO(str(annotation_path))
-    coco_metrics = {
-        "bbox": run_coco_eval(coco_gt, bbox_results, "bbox"),
-        "segm": run_coco_eval(coco_gt, segm_results, "segm"),
-    }
+    coco_metrics = {"bbox": run_coco_eval(coco_gt, bbox_results, "bbox")}
+    if task == SEGMENTATION_TASK:
+        coco_metrics["segm"] = run_coco_eval(coco_gt, segm_results, "segm")
 
     per_class_rows = []
     for category in categories:
@@ -1131,6 +1149,7 @@ def run_evaluation(
         "checkpoint_path": str(checkpoint_path),
         "dataset_path": str(dataset_path),
         "backend": backend,
+        "task": task,
         "split": split_dir.name,
         "image_count": len(per_image_rows),
         "threshold": threshold,

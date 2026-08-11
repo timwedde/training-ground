@@ -11,11 +11,13 @@ import typer
 from .training_backends import (
     RFDETR_BACKEND,
     RFDETR_MODEL_FAMILY,
-    RFDETR_SEG_MODELS,
+    SEGMENTATION_TASK,
     YOLO26_BACKEND,
     YOLO26_MODEL_FAMILY,
-    YOLO26_SEG_MODELS,
+    Task,
     TrainingArtifacts,
+    rfdetr_models_for_task,
+    yolo26_models_for_task,
 )
 
 # Hardcoded configuration
@@ -53,7 +55,7 @@ def build_training_metadata(
         "dataset_name": dataset_name,
         "dataset_slug": dataset_slug,
         "backend": artifacts.backend,
-        "task": "segmentation",
+        "task": artifacts.task,
         "model_name": artifacts.model_name,
         "model_size": artifacts.model_size,
         "model_family": (
@@ -194,12 +196,16 @@ def artifact_files_for_training(artifacts: TrainingArtifacts) -> dict[str, Path]
 
 
 def resolve_training_artifacts(
-    runs_dir: Path, backend: str
+    runs_dir: Path, backend: str, task: Task = SEGMENTATION_TASK
 ) -> tuple[TrainingArtifacts, dict[str, Any] | None]:
     from .training_backends import normalize_backend
 
     normalized_backend = normalize_backend(backend)
     metadata = read_upload_metadata(runs_dir)
+    if metadata is not None and metadata.get("task") in {"boxes", "segmentation"}:
+        task = metadata["task"]
+    rfdetr_models = rfdetr_models_for_task(task)
+    yolo26_models = yolo26_models_for_task(task)
 
     if normalized_backend == RFDETR_BACKEND:
         preferred_onnx_path = (metadata or {}).get("onnx_path")
@@ -207,8 +213,9 @@ def resolve_training_artifacts(
             preferred_onnx_path = None
         artifacts = TrainingArtifacts(
             backend=RFDETR_BACKEND,
+            task=task,
             model_name=str(
-                (metadata or {}).get("model_name", RFDETR_SEG_MODELS["nano"][0])
+                (metadata or {}).get("model_name", rfdetr_models["nano"][0])
             ),
             model_size=(metadata or {}).get("model_size"),
             runs_dir=runs_dir,
@@ -234,16 +241,18 @@ def resolve_training_artifacts(
     model_size = None
     if metadata is not None:
         raw_size = metadata.get("model_size")
-        if isinstance(raw_size, str) and raw_size in YOLO26_SEG_MODELS:
+        if isinstance(raw_size, str) and raw_size in yolo26_models:
             model_size = raw_size
-    if model_size is None and runs_dir.name.startswith("yolo26-"):
-        candidate_size = runs_dir.name.removeprefix("yolo26-")
-        if candidate_size in YOLO26_SEG_MODELS:
+    run_prefix = f"yolo26-{task}-"
+    if model_size is None and runs_dir.name.startswith(run_prefix):
+        candidate_size = runs_dir.name.removeprefix(run_prefix)
+        if candidate_size in yolo26_models:
             model_size = candidate_size
 
     artifacts = TrainingArtifacts(
         backend=YOLO26_BACKEND,
-        model_name=YOLO26_SEG_MODELS.get(model_size or "", "yolo26n-seg.pt"),
+        task=task,
+        model_name=yolo26_models.get(model_size or "", yolo26_models["nano"]),
         model_size=model_size,
         runs_dir=runs_dir,
         primary_checkpoint_path=runs_dir / "weights" / "best.pt",
@@ -441,7 +450,8 @@ async def upload_training_run(
 ) -> int:
     artifacts = TrainingArtifacts(
         backend=RFDETR_BACKEND,
-        model_name=RFDETR_SEG_MODELS["nano"][0],
+        task=SEGMENTATION_TASK,
+        model_name=rfdetr_models_for_task(SEGMENTATION_TASK)["nano"][0],
         model_size=None,
         runs_dir=runs_dir,
         primary_checkpoint_path=checkpoint_ema_path,

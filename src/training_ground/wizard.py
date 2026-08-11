@@ -17,14 +17,18 @@ from .coco import decode_segmentation
 from .evaluation import create_rfdetr_predictor, run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .training_backends import (
+    BOX_TASK,
     RFDETR_BACKEND,
+    RFDETR_BOX_MODEL_LABEL,
     RFDETR_SEG_MODEL_LABEL,
-    RFDETR_SEG_MODELS,
     RFDETR_SIZE_LABELS,
+    SEGMENTATION_TASK,
     YOLO26_BACKEND,
-    YOLO26_SEG_MODELS,
     YOLO26_SIZE_LABELS,
+    Task,
     TrainingArtifacts,
+    rfdetr_models_for_task,
+    yolo26_models_for_task,
     yolo26_run_name,
 )
 from .upload import (
@@ -158,7 +162,7 @@ def _normalize_coco_annotations(annotation_path: Path, output_path: Path) -> lis
     return [str(category["name"]) for category in categories]
 
 
-def prepare_yolo26_dataset(dataset_path: Path) -> Path:
+def prepare_yolo26_dataset(dataset_path: Path, task: Task) -> Path:
     from ultralytics.data.converter import convert_coco
 
     annotations_dir = dataset_path / "_yolo26_annotations"
@@ -180,11 +184,11 @@ def prepare_yolo26_dataset(dataset_path: Path) -> Path:
         class_names = class_names or names
 
     # Roboflow already provides COCO annotations. We normalize them once and then
-    # use Ultralytics' COCO converter to produce YOLO26-compatible segmentation labels.
+    # use Ultralytics' COCO converter to produce YOLO26-compatible labels.
     convert_coco(
         labels_dir=str(annotations_dir),
         save_dir=str(yolo_root),
-        use_segments=True,
+        use_segments=task == SEGMENTATION_TASK,
         cls91to80=False,
     )
 
@@ -214,10 +218,11 @@ def prepare_yolo26_dataset(dataset_path: Path) -> Path:
     return data_yaml_path
 
 
-def train_rfdetr_seg_nano(
+def train_rfdetr(
     dataset_path: Path,
     batch_size: int,
     grad_accum_steps: int,
+    task: Task,
     model_size: str = "nano",
     mask_downsample_ratio: int = 4,
 ) -> TrainingArtifacts:
@@ -226,12 +231,11 @@ def train_rfdetr_seg_nano(
     from onnxsim import simplify
 
     mp.set_sharing_strategy("file_system")
-    model_name, constructor_name = RFDETR_SEG_MODELS[model_size]
-    model = getattr(rfdetr_detr, constructor_name)(
-        mask_downsample_ratio=mask_downsample_ratio,
-        num_queries=50,
-        num_select=20,
-    )
+    model_name, constructor_name = rfdetr_models_for_task(task)[model_size]
+    model_kwargs = {"num_queries": 50, "num_select": 20}
+    if task == SEGMENTATION_TASK:
+        model_kwargs["mask_downsample_ratio"] = mask_downsample_ratio
+    model = getattr(rfdetr_detr, constructor_name)(**model_kwargs)
     aug_config: dict[str, object] = {}
     num_workers = 2
     prefetch_factor = 1
@@ -253,11 +257,12 @@ def train_rfdetr_seg_nano(
         f"persistent_workers={persistent_workers}, "
         f"pin_memory={pin_memory}"
     )
-    typer.echo(
-        "RF-DETR mask output: "
-        f"downsample_ratio={mask_downsample_ratio}, "
-        f"linear_resolution=1/{mask_downsample_ratio} of training input"
-    )
+    if task == SEGMENTATION_TASK:
+        typer.echo(
+            "RF-DETR mask output: "
+            f"downsample_ratio={mask_downsample_ratio}, "
+            f"linear_resolution=1/{mask_downsample_ratio} of training input"
+        )
     train_kwargs = {}
     if model_size == "nano":
         train_kwargs["resolution"] = DEFAULT_TRAINING_RESOLUTION
@@ -315,11 +320,13 @@ def train_rfdetr_seg_nano(
         model=create_rfdetr_predictor(checkpoint_ema, model=model),
         model_size=model_size,
         backend=RFDETR_BACKEND,
+        task=task,
         output_dir=eval_dir,
     )
 
     return TrainingArtifacts(
         backend=RFDETR_BACKEND,
+        task=task,
         model_name=model_name,
         model_size=model_size,
         runs_dir=runs_dir,
@@ -328,20 +335,23 @@ def train_rfdetr_seg_nano(
         metrics_path=metrics_path,
         eval_dir=eval_dir,
         onnx_path=onnx_path,
-        mask_downsample_ratio=mask_downsample_ratio,
+        mask_downsample_ratio=(
+            mask_downsample_ratio if task == SEGMENTATION_TASK else None
+        ),
     )
 
 
-def train_yolo26_seg(
+def train_yolo26(
     dataset_path: Path,
     batch_size: int,
+    task: Task,
     model_size: str,
 ) -> TrainingArtifacts:
     from ultralytics import YOLO
 
-    data_yaml_path = prepare_yolo26_dataset(dataset_path)
-    selected_model_name = YOLO26_SEG_MODELS[model_size]
-    run_name = yolo26_run_name(model_size)
+    data_yaml_path = prepare_yolo26_dataset(dataset_path, task)
+    selected_model_name = yolo26_models_for_task(task)[model_size]
+    run_name = yolo26_run_name(task, model_size)
     model = YOLO(selected_model_name)
     model.train(
         data=str(data_yaml_path),
@@ -400,11 +410,13 @@ def train_yolo26_seg(
         threshold=0.5,
         iou_threshold=0.5,
         backend=YOLO26_BACKEND,
+        task=task,
         output_dir=eval_dir,
     )
 
     return TrainingArtifacts(
         backend=YOLO26_BACKEND,
+        task=task,
         model_name=selected_model_name,
         model_size=model_size,
         runs_dir=runs_dir,
@@ -441,6 +453,7 @@ def run_wizard():
     project = None
     versions = None
     version = None
+    task = SEGMENTATION_TASK
     backend = None
     model_size = None
     mask_downsample_ratio = 4
@@ -482,6 +495,25 @@ def run_wizard():
                 continue
             version_index = int(selected)
             version = versions[version_index]
+            step = "task"
+            continue
+
+        if step == "task":
+            selected = questionary.select(
+                "Select annotation type",
+                choices=[
+                    Choice(title="Boxes", value=BOX_TASK),
+                    Choice(title="Segmentation", value=SEGMENTATION_TASK),
+                    Choice(title="Back", value=BACK_CHOICE),
+                ],
+                default=task,
+                instruction="(Select Back to return)",
+            ).ask()
+            if selected == BACK_CHOICE:
+                step = "version"
+                continue
+            task = selected
+            model_size = None
             step = "backend"
             continue
 
@@ -490,15 +522,24 @@ def run_wizard():
                 "Select model backend",
                 choices=[
                     Choice(title="YOLO26", value=YOLO26_BACKEND),
-                    Choice(title=RFDETR_SEG_MODEL_LABEL, value=RFDETR_BACKEND),
+                    Choice(
+                        title=(
+                            RFDETR_BOX_MODEL_LABEL
+                            if task == BOX_TASK
+                            else RFDETR_SEG_MODEL_LABEL
+                        ),
+                        value=RFDETR_BACKEND,
+                    ),
                     Choice(title="Back", value=BACK_CHOICE),
                 ],
                 default=backend or DEFAULT_BACKEND,
                 instruction="(Select Back to return)",
             ).ask()
             if selected == BACK_CHOICE:
-                step = "version"
+                step = "task"
                 continue
+            if selected != backend:
+                model_size = None
             backend = selected
             step = "model_size"
             continue
@@ -516,18 +557,12 @@ def run_wizard():
                     instruction="(Select Back to return)",
                 ).ask()
             else:
+                rfdetr_models = rfdetr_models_for_task(task)
                 selected = questionary.select(
                     "Select RF-DETR model size",
                     choices=[
                         Choice(title=RFDETR_SIZE_LABELS[size], value=size)
-                        for size in (
-                            "nano",
-                            "small",
-                            "medium",
-                            "large",
-                            "xlarge",
-                            "2xlarge",
-                        )
+                        for size in rfdetr_models
                     ]
                     + [Choice(title="Back", value=BACK_CHOICE)],
                     default=model_size or DEFAULT_RFDETR_MODEL_SIZE,
@@ -537,7 +572,11 @@ def run_wizard():
                 step = "backend"
                 continue
             model_size = selected
-            step = "mask_ratio" if backend == RFDETR_BACKEND else "gpu"
+            step = (
+                "mask_ratio"
+                if backend == RFDETR_BACKEND and task == SEGMENTATION_TASK
+                else "gpu"
+            )
             continue
 
         if step == "mask_ratio":
@@ -569,7 +608,11 @@ def run_wizard():
                 instruction="(Select Back to return)",
             ).ask()
             if batch_size_selection == BACK_CHOICE:
-                step = "mask_ratio" if backend == RFDETR_BACKEND else "model_size"
+                step = (
+                    "mask_ratio"
+                    if backend == RFDETR_BACKEND and task == SEGMENTATION_TASK
+                    else "model_size"
+                )
                 continue
 
             if batch_size_selection == "custom":
@@ -595,17 +638,19 @@ def run_wizard():
     dataset_name = project.id.split("/")[-1]
 
     if backend == RFDETR_BACKEND:
-        artifacts = train_rfdetr_seg_nano(
+        artifacts = train_rfdetr(
             dataset_path=dataset_path,
             batch_size=batch_size,
             grad_accum_steps=grad_accum_steps,
+            task=task,
             model_size=model_size,
             mask_downsample_ratio=mask_downsample_ratio,
         )
     else:
-        artifacts = train_yolo26_seg(
+        artifacts = train_yolo26(
             dataset_path=dataset_path,
             batch_size=batch_size,
+            task=task,
             model_size=model_size or "nano",
         )
 
