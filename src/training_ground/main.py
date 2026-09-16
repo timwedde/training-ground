@@ -174,7 +174,8 @@ def predict_dir(
     )
 
     typer.echo(
-        f"Prediction complete. Wrote {result['image_count']} files to {output_dir}"
+        f"Prediction complete. Processed {result['image_count']} images; "
+        f"wrote {result['file_count']} files to {output_dir}"
     )
     if result["fallback_count"]:
         typer.echo(

@@ -58,6 +58,8 @@ The `predict-dir` command runs prediction on every image in a directory tree, dr
 training-ground predict-dir [OPTIONS] INPUT_DIR OUTPUT_DIR
 ```
 
+Outputs are grouped as `OUTPUT_DIR/<class>/<source-relative-path>`, with only that class annotated. Images containing multiple classes appear in each matching folder; images without detections go into `OUTPUT_DIR/no_detections/`. Source subfolders are preserved. Uploads still happen once per source image with all predictions.
+
 ### Options
 
 * `--checkpoint-path PATH`: Model checkpoint path (defaults to `best.pt`).

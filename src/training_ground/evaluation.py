@@ -2,6 +2,7 @@ import csv
 import json
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import faster_coco_eval
 
@@ -760,29 +761,41 @@ def run_prediction_directory(
         with typer.progressbar(image_paths, label="Running inference") as progress:
             for image_path in progress:
                 relative_path = image_path.relative_to(input_dir)
-                requested_output_path = output_dir / relative_path
-                requested_output_path.parent.mkdir(parents=True, exist_ok=True)
-
                 detections = model.predict(str(image_path), threshold=threshold)
                 pred_items = build_pred_items(
                     detections, category_names, label_to_category_id
                 )
-                saved_path = render_prediction_overlay(
-                    image_path=image_path,
-                    output_path=requested_output_path,
-                    pred_items=pred_items,
-                    summary_text=(
-                        f"Predictions: {len(pred_items)} | "
-                        + (
-                            f"threshold {threshold:.2f}"
-                            if threshold is not None
-                            else "model confidence defaults"
-                        )
-                    ),
-                )
-                if saved_path != requested_output_path:
-                    fallback_count += 1
-                saved_paths.append(saved_path)
+                items_by_class: dict[int, list[dict]] = {}
+                for item in pred_items:
+                    items_by_class.setdefault(item["category_id"], []).append(item)
+                groups = []
+                for class_id, items in sorted(items_by_class.items()):
+                    folder = quote(items[0]["class_name"], safe="")
+                    if folder in {"", ".", "..", "no_detections"}:
+                        folder = f"class_{class_id}_{folder}"
+                    groups.append((folder, items))
+                if not groups:
+                    groups = [("no_detections", [])]
+
+                for folder, items in groups:
+                    requested_output_path = output_dir / folder / relative_path
+                    requested_output_path.parent.mkdir(parents=True, exist_ok=True)
+                    saved_path = render_prediction_overlay(
+                        image_path=image_path,
+                        output_path=requested_output_path,
+                        pred_items=items,
+                        summary_text=(
+                            f"Predictions: {len(items)} | "
+                            + (
+                                f"threshold {threshold:.2f}"
+                                if threshold is not None
+                                else "model confidence defaults"
+                            )
+                        ),
+                    )
+                    if saved_path != requested_output_path:
+                        fallback_count += 1
+                    saved_paths.append(saved_path)
 
                 if upload_executor is not None and project is not None:
                     future = upload_executor.submit(
@@ -810,6 +823,7 @@ def run_prediction_directory(
 
     return {
         "image_count": len(image_paths),
+        "file_count": len(saved_paths),
         "saved_paths": saved_paths,
         "output_dir": output_dir,
         "fallback_count": fallback_count,
