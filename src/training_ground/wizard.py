@@ -358,7 +358,7 @@ def train_yolo26(
         epochs=200,
         batch=batch_size,
         imgsz=YOLO26_IMAGE_SIZE,
-        patience=3,
+        patience=10,
         workers=8,
         project="runs",
         name=run_name,
