@@ -70,7 +70,12 @@ def evaluate(
         dir_okay=False,
     ),
     split: str = typer.Option("test", help="Dataset split: train, valid, or test."),
-    threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
+    threshold: float | None = typer.Option(
+        None,
+        min=0.0,
+        max=1.0,
+        help="Override confidence thresholds. Default: camera class thresholds for compatible RF-DETR Medium STM models; 0.5 otherwise.",
+    ),
     iou_threshold: float = typer.Option(0.5, help="IoU threshold for TP/FP matching."),
     backend: str = typer.Option(
         YOLO26_BACKEND,
@@ -121,7 +126,12 @@ def predict_dir(
         dir_okay=False,
         help="Model checkpoint path.",
     ),
-    threshold: float = typer.Option(0.5, help="Prediction confidence threshold."),
+    threshold: float | None = typer.Option(
+        None,
+        min=0.0,
+        max=1.0,
+        help="Override confidence thresholds. Default: camera class thresholds for compatible RF-DETR Medium STM models; 0.5 otherwise.",
+    ),
     backend: str = typer.Option(
         RFDETR_BACKEND,
         "--backend",

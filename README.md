@@ -61,12 +61,25 @@ training-ground predict-dir [OPTIONS] INPUT_DIR OUTPUT_DIR
 ### Options
 
 * `--checkpoint-path PATH`: Model checkpoint path (defaults to `best.pt`).
-* `--threshold FLOAT`: Prediction confidence threshold (defaults to `0.5`).
+* `--threshold FLOAT`: Override confidence thresholds for enabled classes. Defaults to the camera's per-class thresholds for compatible RF-DETR Medium STM checkpoints, or `0.5` for other models.
 * `--backend [yolo26|rfdetr]`: Model backend to use (defaults to `rfdetr`).
 * `--task [boxes|segmentation]`: Model task (defaults to `segmentation`).
-* `--model-size TEXT`: Model size (nano, small, medium, large, etc.). Required for non-nano RF-DETR checkpoints.
+* `--model-size TEXT`: Model size fallback for legacy RF-DETR checkpoints without embedded model metadata (defaults to nano).
 * `--upload`: Enables uploading processed samples to Roboflow.
 * `--project TEXT`: Explicit Roboflow project ID for upload (e.g. `stick-detection`).
+
+RF-DETR checkpoints with embedded model metadata automatically restore their architecture, including Medium models with `/2` mask resolution. Both `predict-dir` and `evaluate` preserve the saved mask resolution and select the inference device for the current machine. No `--model-size` override is needed for these checkpoints.
+
+For Medium STM checkpoints such as `model.pth` (432 input, `/2` masks, 20 selections, and class slots 1–3 named pole/stick/tree), prediction and evaluation automatically use the settings from `../fw-jetson/camera`'s Medium STM v3.6/v3.7 profile:
+
+* Confidence: pole **0.90**, stick **0.55**, tree **0.60**, including scores equal to the threshold.
+* Disable garbage/background slots before selecting the top 20 query/class pairs; no NMS.
+* Preserve aspect ratio with centered black letterboxing to 432×432 and ImageNet normalization.
+* Use 216×216 mask logits, the camera's centered width-based mask crop, bilinear resizing to the source image, and a strict logit `> 0` mask cutoff.
+
+An explicit `--threshold` replaces the three enabled-class confidence thresholds; it does not enable garbage/background. Other model architectures and class layouts retain their usual inference behavior. These are matching inference settings, not bit-for-bit TensorRT output: local PyTorch inference uses float32 while the camera engine uses FP16. The camera's width-based mask crop assumes landscape frames; portrait images follow that same camera rule.
+
+CLI overlays and metrics retain one detection per selected query/class pair (the camera groups these into instances with multiple class confidences). Small images use bilinear upsampling; production-sized images use the camera's downsampling filter.
 
 ### High-Performance Asynchronous Upload Pipeline
 
@@ -83,7 +96,7 @@ training-ground evaluate datasets/<dataset> runs/yolo26-boxes-nano/weights/best.
 training-ground evaluate datasets/<dataset> runs/yolo26-segmentation-nano/weights/best.pt --backend yolo26 --task segmentation
 training-ground evaluate datasets/<dataset> runs/checkpoint_best_ema.pth --backend rfdetr
 training-ground predict-dir ./images ./predictions --checkpoint-path runs/yolo26-boxes-nano/weights/best.pt --backend yolo26 --task boxes
-training-ground predict-dir ./false-negatives ./predictions --checkpoint-path model.pth --backend rfdetr --model-size nano --upload
+training-ground predict-dir ./false-negatives ./predictions --checkpoint-path model.pth --backend rfdetr --upload
 training-ground upload runs/yolo26-boxes-nano --backend yolo26 --task boxes
 training-ground upload runs --backend rfdetr
 ```

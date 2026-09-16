@@ -39,7 +39,7 @@ CLASS_PRED_COLORS = {
 class Predictor(Protocol):
     class_names: list[str]
 
-    def predict(self, image_path: str, threshold: float): ...
+    def predict(self, image_path: str, threshold: float | None): ...
 
 
 class YOLO26PredictorAdapter:
@@ -56,10 +56,10 @@ class YOLO26PredictorAdapter:
         else:
             self.class_names = [str(name) for name in names]
 
-    def predict(self, image_path: str, threshold: float):
+    def predict(self, image_path: str, threshold: float | None):
         results = self._model.predict(
             source=image_path,
-            conf=threshold,
+            conf=0.5 if threshold is None else threshold,
             verbose=False,
             imgsz=640,
         )
@@ -107,7 +107,15 @@ class YOLO26PredictorAdapter:
 
 class RFDETRPredictorAdapter:
     def __init__(self, model):
+        from .camera_inference import matches_camera_model
+
         self._model = model
+        self.camera_profile = matches_camera_model(model)
+        if self.camera_profile:
+            typer.echo(
+                "Camera STM settings: input=432, masks=216, top-k=20, "
+                "pole=0.90, stick=0.55, tree=0.60; centered letterbox."
+            )
         self.class_names = [
             str(name) for name in getattr(model, "class_names", []) or []
         ]
@@ -116,8 +124,14 @@ class RFDETRPredictorAdapter:
         if hasattr(self._model, "optimize_for_inference"):
             self._model.optimize_for_inference()
 
-    def predict(self, image_path: str, threshold: float):
-        return self._model.predict(image_path, threshold=threshold)
+    def predict(self, image_path: str, threshold: float | None):
+        if self.camera_profile:
+            from .camera_inference import predict
+
+            return predict(self._model, image_path, threshold)
+        return self._model.predict(
+            image_path, threshold=0.5 if threshold is None else threshold
+        )
 
 
 class DetectionBatch:
@@ -140,10 +154,14 @@ def create_rfdetr_predictor(
     if model is None:
         import rfdetr
         import rfdetr.detr as rfdetr_detr
+        from rfdetr.config import ModelConfig
 
         typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
+        # Preserve checkpoint architecture (including mask resolution), but use
+        # this machine's default device rather than the saved training device.
+        device = ModelConfig.model_fields["device"].default
         try:
-            model = rfdetr.from_checkpoint(checkpoint_path.resolve())
+            model = rfdetr.from_checkpoint(checkpoint_path.resolve(), device=device)
         except ValueError as exc:
             if "Could not infer model class from checkpoint" not in str(exc):
                 raise
@@ -155,7 +173,9 @@ def create_rfdetr_predictor(
             )
             _, constructor_name = rfdetr_models_for_task(task)[legacy_model_size]
             constructor = getattr(rfdetr_detr, constructor_name)
-            model = constructor(pretrain_weights=str(checkpoint_path.resolve()))
+            model = constructor(
+                pretrain_weights=str(checkpoint_path.resolve()), device=device
+            )
 
         model_config = getattr(model, "model_config", None)
         if model_config is not None:
@@ -693,7 +713,7 @@ def run_prediction_directory(
     input_dir: Path,
     checkpoint_path: Path,
     output_dir: Path,
-    threshold: float,
+    threshold: float | None,
     backend: Backend = RFDETR_BACKEND,
     model_size: str | None = None,
     task: Task = SEGMENTATION_TASK,
@@ -751,7 +771,14 @@ def run_prediction_directory(
                     image_path=image_path,
                     output_path=requested_output_path,
                     pred_items=pred_items,
-                    summary_text=f"Predictions: {len(pred_items)} | threshold {threshold:.2f}",
+                    summary_text=(
+                        f"Predictions: {len(pred_items)} | "
+                        + (
+                            f"threshold {threshold:.2f}"
+                            if threshold is not None
+                            else "model confidence defaults"
+                        )
+                    ),
                 )
                 if saved_path != requested_output_path:
                     fallback_count += 1
@@ -793,7 +820,7 @@ def run_evaluation(
     dataset_path: Path,
     checkpoint_path: Path,
     split: str,
-    threshold: float,
+    threshold: float | None,
     iou_threshold: float,
     model: Predictor | None = None,
     backend: Backend = RFDETR_BACKEND,
@@ -1153,6 +1180,7 @@ def run_evaluation(
         "split": split_dir.name,
         "image_count": len(per_image_rows),
         "threshold": threshold,
+        "camera_profile": getattr(model, "camera_profile", False),
         "iou_threshold": iou_threshold,
         "per_class": per_class_rows,
         "coco_metrics": coco_metrics,
