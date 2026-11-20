@@ -10,6 +10,7 @@ def write_evaluation_plots(
     per_image_rows: list[dict],
     prediction_rows: list[dict],
     coco_metrics: dict[str, dict[str, object]],
+    coco_confidence_floor: float,
 ):
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -19,7 +20,9 @@ def write_evaluation_plots(
     )
     _write_prediction_scatter(plots_dir, prediction_rows)
     if any(metrics["stats"] for metrics in coco_metrics.values()):
-        _write_coco_metrics(plots_dir, per_class_rows, coco_metrics)
+        _write_coco_metrics(
+            plots_dir, per_class_rows, coco_metrics, coco_confidence_floor
+        )
 
 
 def _write_performance_overview(
@@ -134,6 +137,7 @@ def _write_coco_metrics(
     plots_dir: Path,
     per_class_rows: list[dict],
     coco_metrics: dict[str, dict[str, object]],
+    coco_confidence_floor: float,
 ):
     valid_metrics = [
         (name, metrics)
@@ -173,6 +177,7 @@ def _write_coco_metrics(
             "text": (
                 "COCO per-class AP metrics"
                 "<br><sup>"
+                f"Confidence floor {coco_confidence_floor:g} | "
                 "AP = mean over IoU 0.50-0.95 | "
                 "AP50 = IoU 0.50 | "
                 "AP75 = IoU 0.75 | "

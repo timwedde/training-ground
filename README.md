@@ -36,6 +36,8 @@ training-ground wizard
 
 Each training run gets a new directory under `runs/`. The wizard prints the checkpoint, ONNX model, and evaluation report paths before upload. Standalone evaluations also create a fresh report for each invocation.
 
+Evaluation reports use a confidence floor of `0.001` for COCO AP. Precision, recall, F1, and overlays use `--threshold` or the model’s operating defaults. STM evaluation uses the camera geometry and 20-output cap in both sets of metrics.
+
 When `YOLO26` is selected, the wizard asks for a model size:
 
 - `Nano`

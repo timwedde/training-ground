@@ -28,6 +28,8 @@ from .training_backends import (
 OVERLAY_ALPHA = 0.28
 OVERLAY_QUALITY = 92
 SUMMARY_BAR_HEIGHT = 24
+DEFAULT_CONFIDENCE_THRESHOLD = 0.5
+COCO_CONFIDENCE_FLOOR = 0.001
 DEFAULT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".avif", ".webp"}
 DEFAULT_PRED_COLOR = (231, 76, 60)
 CLASS_PRED_COLORS = {
@@ -62,7 +64,7 @@ class YOLO26PredictorAdapter:
     def predict(self, image_path: str, threshold: float | None):
         results = self._model.predict(
             source=image_path,
-            conf=0.5 if threshold is None else threshold,
+            conf=DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold,
             verbose=False,
             imgsz=640,
             retina_masks=True,
@@ -124,9 +126,13 @@ class RFDETRPredictorAdapter:
             from .camera_inference import predict
 
             return predict(self._predictor, image_path, threshold)
+        from rfdetr import ClassThresholds
+
+        confidence = DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold
         return self._predictor.predict(
             image_path,
-            threshold=0.5 if threshold is None else threshold,
+            # A uniform class threshold excludes RF-DETR's unmapped no-object slot.
+            threshold=ClassThresholds({}, default=confidence),
             include_source_image=False,
         )
 
@@ -889,6 +895,22 @@ def run_evaluation(
             task=task,
         )
 
+    camera_profile = getattr(model, "camera_profile", False)
+    operating_threshold = threshold
+    camera_thresholds = None
+    if operating_threshold is None:
+        if camera_profile:
+            from .camera_inference import CLASS_THRESHOLDS
+
+            camera_thresholds = CLASS_THRESHOLDS
+        else:
+            operating_threshold = DEFAULT_CONFIDENCE_THRESHOLD
+    inference_threshold = (
+        COCO_CONFIDENCE_FLOOR
+        if operating_threshold is None
+        else min(COCO_CONFIDENCE_FLOOR, operating_threshold)
+    )
+
     category_names = {category["id"]: category["name"] for category in categories}
     label_to_category_id = build_label_to_category_id(model, categories)
 
@@ -919,14 +941,30 @@ def run_evaluation(
                 raise ValueError(f"Invalid COCO image path: {relative_path}")
             image_path = split_dir / relative_path
             gt_annotations = annotations_by_image.get(image_id, [])
-            detections = model.predict(str(image_path), threshold=threshold)
-
-            pred_items = build_pred_items(
-                detections=detections,
-                category_names=category_names,
-                label_to_category_id=label_to_category_id,
+            # Lower the inference cutoff once, then apply the two report thresholds
+            # independently to the same detections.
+            detections = model.predict(str(image_path), threshold=inference_threshold)
+            scores = detections.confidence
+            cutoff = operating_threshold
+            if camera_thresholds is not None:
+                cutoff = np.asarray(camera_thresholds, dtype=scores.dtype)[
+                    detections.class_id.astype(int, copy=False)
+                ]
+            at_operating_point = scores >= cutoff if camera_profile else scores > cutoff
+            all_items = build_pred_items(
+                detections, category_names, label_to_category_id
             )
-            for item in pred_items:
+            pred_items = []
+            for item, for_coco, for_operating_metrics in zip(
+                all_items,
+                scores > COCO_CONFIDENCE_FLOOR,
+                at_operating_point,
+                strict=True,
+            ):
+                if for_operating_metrics:
+                    pred_items.append(item)
+                if not for_coco:
+                    continue
                 bbox_results.append(
                     {
                         "image_id": image_id,
@@ -1129,8 +1167,9 @@ def run_evaluation(
         "task": task,
         "split": split_dir.name,
         "image_count": len(per_image_rows),
-        "threshold": threshold,
-        "camera_profile": getattr(model, "camera_profile", False),
+        "threshold": operating_threshold,
+        "camera_profile": camera_profile,
+        "coco_confidence_floor": COCO_CONFIDENCE_FLOOR,
         "iou_threshold": iou_threshold,
         "per_class": per_class_rows,
         "coco_metrics": coco_metrics,
@@ -1142,12 +1181,18 @@ def run_evaluation(
             ),
         },
     }
+    if camera_thresholds is not None:
+        summary["class_thresholds"] = {
+            name: camera_thresholds[class_id]
+            for class_id, name in model.class_id_to_name.items()
+        }
     write_evaluation_plots(
         output_dir=output_dir,
         per_class_rows=per_class_rows,
         per_image_rows=per_image_rows,
         prediction_rows=prediction_rows,
         coco_metrics=coco_metrics,
+        coco_confidence_floor=COCO_CONFIDENCE_FLOOR,
     )
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 

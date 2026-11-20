@@ -14,7 +14,7 @@ import yaml
 from PIL import Image
 from typer.testing import CliRunner
 
-from training_ground.coco import decode_segmentation
+from training_ground.coco import decode_segmentation, encode_binary_mask
 from training_ground.evaluation import (
     DetectionBatch,
     YOLO26PredictorAdapter,
@@ -94,6 +94,62 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(
                 (first / "overlays/nested/sample_name.jpg_overlay.jpg").is_file()
             )
+            summary = json.loads((second / "summary.json").read_text())
+            self.assertEqual(summary["coco_metrics"]["bbox"]["stats"][0], 0)
+
+    def test_coco_ap_is_independent_of_operating_threshold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            masks = np.zeros((3, 32, 32), dtype=bool)
+            annotations = []
+            boxes = []
+            for index, x in enumerate((2, 12, 22)):
+                masks[index, 2:8, x : x + 6] = True
+                boxes.append([x, 2, x + 6, 8])
+                annotations.append(
+                    annotation(9)
+                    | {
+                        "id": index + 1,
+                        "bbox": [x, 2, 6, 6],
+                        "area": 36,
+                        "segmentation": encode_binary_mask(masks[index]),
+                    }
+                )
+            image_path = write_split(root, "test", [(9, "tree")], annotations)
+            detections = DetectionBatch(
+                np.array(boxes),
+                np.array([0.6, 0.2, 0.0005], dtype=np.float32),
+                np.array([3, 3, 3]),
+                masks,
+            )
+            model = SimpleNamespace(class_id_to_name={3: "tree"}, predict=Mock())
+            for camera_profile, threshold, expected_tp, inference_floor in (
+                (False, None, 1, 0.001),
+                (False, 0.0, 3, 0.0),
+                (True, None, 1, 0.001),
+                (True, 0.2, 2, 0.001),
+            ):
+                with self.subTest(camera_profile=camera_profile, threshold=threshold):
+                    model.camera_profile = camera_profile
+                    model.predict.reset_mock()
+                    model.predict.return_value = detections
+                    report = run_evaluation(
+                        root, root / "model.pth", "test", threshold, 0.5, model=model
+                    )
+                    model.predict.assert_called_once_with(
+                        str(image_path), threshold=inference_floor
+                    )
+                    summary = json.loads((report / "summary.json").read_text())
+                    self.assertEqual(summary["coco_confidence_floor"], 0.001)
+                    for task in ("bbox", "segm"):
+                        self.assertAlmostEqual(
+                            summary["coco_metrics"][task]["stats"][8], 2 / 3
+                        )
+                    self.assertAlmostEqual(
+                        summary["overall"]["recall"], expected_tp / 3
+                    )
+                    with (report / "prediction_metrics.csv").open() as handle:
+                        self.assertEqual(len(list(csv.DictReader(handle))), expected_tp)
 
     def test_yolo_dataset_reuses_training_class_order_and_keeps_nested_paths(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -2,20 +2,17 @@ import io
 from contextlib import redirect_stdout
 
 import numpy as np
-from faster_coco_eval import cocoeval
+from faster_coco_eval import COCO, cocoeval
 
 
 def run_coco_eval(coco_gt, results: list[dict], iou_type: str) -> dict[str, object]:
-    if not results:
-        return {
-            "stats": None,
-            "per_class_ap50": {},
-            "per_class_ap75": {},
-            "per_class_ap95": {},
-            "per_class_ap": {},
-        }
-
-    coco_dt = coco_gt.loadRes(results)
+    # loadRes expects at least one detection. An empty prediction set still
+    # measures zero AP when the dataset has eligible ground truth.
+    coco_dt = (
+        coco_gt.loadRes(results)
+        if results
+        else COCO({**coco_gt.dataset, "annotations": []})
+    )
     evaluator = cocoeval.COCOeval(coco_gt, coco_dt, iou_type)
     capture = io.StringIO()
     with redirect_stdout(capture):

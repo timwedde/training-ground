@@ -72,7 +72,7 @@ def evaluate(
         None,
         min=0.0,
         max=1.0,
-        help="Override confidence thresholds. Default: camera class thresholds for compatible RF-DETR Medium STM models; 0.5 otherwise.",
+        help="Confidence for precision, recall, F1, and overlays. Defaults to STM class thresholds or 0.5. COCO AP uses a separate 0.001 floor.",
     ),
     iou_threshold: float = typer.Option(0.5, help="IoU threshold for TP/FP matching."),
     backend: str = typer.Option(
