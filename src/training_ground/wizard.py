@@ -5,6 +5,7 @@ import shutil
 import struct
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from tempfile import TemporaryDirectory, mkdtemp
 
 import onnx
 import onnx.helper
@@ -13,8 +14,7 @@ import typer
 import yaml
 from questionary import Choice
 
-from .coco import decode_segmentation
-from .evaluation import create_rfdetr_predictor, run_evaluation
+from .evaluation import RFDETRPredictorAdapter, load_rfdetr_checkpoint, run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .training_backends import (
     BOX_TASK,
@@ -104,101 +104,90 @@ def _copy_or_link_image(source_path: Path, target_path: Path) -> None:
         shutil.copy2(source_path, target_path)
 
 
-def _normalize_coco_annotations(annotation_path: Path, output_path: Path) -> list[str]:
-    import cv2
-    import numpy as np
-
-    with annotation_path.open(encoding="utf-8") as handle:
-        dataset = json.load(handle)
-
-    images_by_id = {image["id"]: image for image in dataset.get("images", [])}
-    categories = sorted(
-        dataset.get("categories", []), key=lambda category: category["id"]
-    )
-    category_id_map = {
-        category["id"]: index + 1 for index, category in enumerate(categories)
+def _normalize_coco_annotations(
+    dataset: dict, output_path: Path, class_ids: dict[str, int]
+) -> None:
+    category_names = {
+        category["id"]: category["name"] for category in dataset["categories"]
     }
+    if len(set(category_names.values())) != len(dataset["categories"]):
+        raise ValueError(f"Duplicate COCO categories in {output_path.stem} split.")
 
     normalized_annotations = []
     for annotation in dataset.get("annotations", []):
         normalized = dict(annotation)
-        normalized["category_id"] = category_id_map[annotation["category_id"]]
-        segmentation = annotation.get("segmentation")
-        if isinstance(segmentation, dict):
-            image = images_by_id[annotation["image_id"]]
-            decoded = decode_segmentation(
-                segmentation,
-                int(image["height"]),
-                int(image["width"]),
+        name = category_names.get(annotation["category_id"])
+        if name not in class_ids:
+            raise ValueError(
+                f"{output_path.stem} annotation {annotation['id']} uses class "
+                f"{name or annotation['category_id']!r}, which is missing from the training classes."
             )
-            contours, _ = cv2.findContours(
-                decoded.astype(np.uint8),
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE,
-            )
-            polygons = []
-            for contour in contours:
-                contour = contour.reshape(-1, 2)
-                if len(contour) >= 3:
-                    polygons.append(contour.astype(float).reshape(-1).tolist())
-            normalized["segmentation"] = polygons
-        elif isinstance(segmentation, list):
-            normalized["segmentation"] = [
-                segment for segment in segmentation if len(segment) >= 6
-            ]
-        else:
-            normalized["segmentation"] = []
+        normalized["category_id"] = class_ids[name]
         normalized_annotations.append(normalized)
 
     normalized_dataset = dict(dataset)
     normalized_dataset["categories"] = [
-        {"id": index + 1, **{k: v for k, v in category.items() if k != "id"}}
-        for index, category in enumerate(categories)
+        {"id": class_id, "name": name} for name, class_id in class_ids.items()
     ]
     normalized_dataset["annotations"] = normalized_annotations
 
     output_path.write_text(json.dumps(normalized_dataset), encoding="utf-8")
-    return [str(category["name"]) for category in categories]
 
 
-def prepare_yolo26_dataset(dataset_path: Path, task: Task) -> Path:
+def prepare_yolo26_dataset(dataset_path: Path, yolo_root: Path, task: Task) -> Path:
     from ultralytics.data.converter import convert_coco
 
-    annotations_dir = dataset_path / "_yolo26_annotations"
-    yolo_root = dataset_path / "yolo26"
-    if annotations_dir.exists():
-        shutil.rmtree(annotations_dir)
     if yolo_root.exists():
-        shutil.rmtree(yolo_root)
-
-    annotations_dir.mkdir(parents=True, exist_ok=True)
-
-    class_names: list[str] | None = None
-    split_aliases = {"train": "train", "valid": "valid", "test": "test"}
-    for split_name, output_name in split_aliases.items():
-        annotation_path = dataset_path / split_name / "_annotations.coco.json"
-        names = _normalize_coco_annotations(
-            annotation_path, annotations_dir / f"{output_name}.json"
-        )
-        class_names = class_names or names
-
-    # Roboflow already provides COCO annotations. We normalize them once and then
-    # use Ultralytics' COCO converter to produce YOLO26-compatible labels.
-    convert_coco(
-        labels_dir=str(annotations_dir),
-        save_dir=str(yolo_root),
-        use_segments=task == SEGMENTATION_TASK,
-        cls91to80=False,
+        raise FileExistsError(yolo_root)
+    splits = ("train", "valid", "test")
+    train_annotations = json.loads(
+        (dataset_path / "train" / "_annotations.coco.json").read_bytes()
     )
+    class_names = [
+        category["name"]
+        for category in sorted(
+            train_annotations["categories"], key=lambda item: item["id"]
+        )
+    ]
+    if not class_names or len(set(class_names)) != len(class_names):
+        raise ValueError("Training COCO categories must have unique class names.")
+    class_ids = {name: index for index, name in enumerate(class_names, start=1)}
 
-    for split_name in split_aliases:
+    images_by_split: dict[str, list[Path]] = {}
+    with TemporaryDirectory() as temp_dir:
+        annotations_dir = Path(temp_dir)
+        for split in splits:
+            dataset = (
+                train_annotations
+                if split == "train"
+                else json.loads(
+                    (dataset_path / split / "_annotations.coco.json").read_bytes()
+                )
+            )
+            _normalize_coco_annotations(
+                dataset, annotations_dir / f"{split}.json", class_ids
+            )
+            image_paths = [Path(image["file_name"]) for image in dataset["images"]]
+            for path in image_paths:
+                if path.is_absolute() or ".." in path.parts:
+                    raise ValueError(f"Invalid COCO image path: {path}")
+                if not (dataset_path / split / path).is_file():
+                    raise FileNotFoundError(dataset_path / split / path)
+            images_by_split[split] = image_paths
+
+        convert_coco(
+            labels_dir=str(annotations_dir),
+            save_dir=str(yolo_root),
+            use_segments=task == SEGMENTATION_TASK,
+            cls91to80=False,
+        )
+
+    for split_name, image_paths in images_by_split.items():
         source_split_dir = dataset_path / split_name
         target_split_dir = yolo_root / "images" / split_name
         target_split_dir.mkdir(parents=True, exist_ok=True)
-        for image_path in source_split_dir.iterdir():
-            if image_path.name == "_annotations.coco.json" or not image_path.is_file():
-                continue
-            _copy_or_link_image(image_path, target_split_dir / image_path.name)
+        for path in image_paths:
+            _copy_or_link_image(source_split_dir / path, target_split_dir / path)
 
     data_yaml_path = yolo_root / "data.yaml"
     data_yaml_path.write_text(
@@ -208,13 +197,21 @@ def prepare_yolo26_dataset(dataset_path: Path, task: Task) -> Path:
                 "train": "images/train",
                 "val": "images/valid",
                 "test": "images/test",
-                "names": class_names or [],
+                "names": class_names,
             },
             sort_keys=False,
         ),
         encoding="utf-8",
     )
     return data_yaml_path
+
+
+def create_run_directory(name: str) -> Path:
+    runs_root = Path("runs").resolve()
+    runs_root.mkdir(parents=True, exist_ok=True)
+    runs_dir = Path(mkdtemp(prefix=f"{name}-", dir=runs_root))
+    typer.echo(f"Training artifacts directory: {runs_dir}")
+    return runs_dir
 
 
 def train_rfdetr(
@@ -230,6 +227,7 @@ def train_rfdetr(
     from onnxsim import simplify
 
     mp.set_sharing_strategy("file_system")
+    runs_dir = create_run_directory(f"rfdetr-{task}-{model_size}")
     model_name, constructor_name = rfdetr_models_for_task(task)[model_size]
     model_kwargs = {"num_queries": 50, "num_select": 20}
     if task == SEGMENTATION_TASK:
@@ -284,13 +282,18 @@ def train_rfdetr(
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
         pin_memory=pin_memory,
-        output_dir="runs",
+        output_dir=str(runs_dir),
         **train_kwargs,
     )
 
-    runs_dir = Path("runs")
+    del model
+    checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
+    checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
+    best_model = load_rfdetr_checkpoint(
+        checkpoint_ema, model_size=model_size, task=task
+    )
     typer.echo("Exporting model to ONNX...")
-    onnx_path = model.export(
+    onnx_path = best_model.export(
         output_dir=str(runs_dir), output_name="inference_model", verbose=False
     )
     onnx_model = onnx.load(onnx_path)
@@ -302,8 +305,6 @@ def train_rfdetr(
     typer.echo("Generating training metrics plots...")
     plot_training_metrics(metrics_path)
 
-    checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
-    checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
     eval_dir = runs_dir / f"{checkpoint_ema.stem}_test_evaluation"
     typer.echo("Running evaluation on best EMA checkpoint...")
     run_evaluation(
@@ -312,7 +313,7 @@ def train_rfdetr(
         split="test",
         threshold=None,
         iou_threshold=0.5,
-        model=create_rfdetr_predictor(checkpoint_ema, model=model),
+        model=RFDETRPredictorAdapter(best_model),
         model_size=model_size,
         backend=RFDETR_BACKEND,
         task=task,
@@ -344,9 +345,9 @@ def train_yolo26(
 ) -> TrainingArtifacts:
     from ultralytics import YOLO
 
-    data_yaml_path = prepare_yolo26_dataset(dataset_path, task)
+    runs_dir = create_run_directory(yolo26_run_name(task, model_size))
+    data_yaml_path = prepare_yolo26_dataset(dataset_path, runs_dir / "dataset", task)
     selected_model_name = yolo26_models_for_task(task)[model_size]
-    run_name = yolo26_run_name(task, model_size)
     model = YOLO(selected_model_name)
     model.train(
         data=str(data_yaml_path),
@@ -355,8 +356,9 @@ def train_yolo26(
         imgsz=YOLO26_IMAGE_SIZE,
         patience=10,
         workers=8,
-        project="runs",
-        name=run_name,
+        project=str(runs_dir.parent),
+        name=runs_dir.name,
+        # The directory was reserved for this invocation before conversion.
         exist_ok=True,
     )
 
@@ -367,7 +369,7 @@ def train_yolo26(
             "YOLO26 training completed but Ultralytics did not expose a save_dir"
         )
 
-    runs_dir = Path(save_dir)
+    runs_dir = Path(save_dir).resolve()
     best_path = runs_dir / "weights" / "best.pt"
     last_path = runs_dir / "weights" / "last.pt"
     metrics_path = runs_dir / "results.csv"
@@ -651,13 +653,15 @@ def run_wizard():
 
     metadata = build_training_metadata(dataset_name, artifacts)
     write_upload_metadata(artifacts.runs_dir, dataset_name, metadata)
+    typer.echo(f"Checkpoint: {artifacts.primary_checkpoint_path}")
+    typer.echo(f"ONNX model: {artifacts.onnx_path}")
+    typer.echo(f"Evaluation report: {artifacts.eval_dir}")
 
     typer.echo("Preparing to upload training run to GCS...")
     import asyncio
 
     run_id = asyncio.run(
         upload_artifact_bundle(
-            runs_dir=artifacts.runs_dir,
             dataset_name=dataset_name,
             artifact_files=artifact_files_for_training(artifacts),
             metadata=metadata,

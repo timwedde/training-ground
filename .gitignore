@@ -1,3 +1,5 @@
+*.zip
+Waste Detection 5928.v34i.coco/
 .DS_Store
 datasets/
 weights/

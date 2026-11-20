@@ -12,8 +12,6 @@ def load_coco_annotations(
     dict[int, dict],
     dict[int, list[dict]],
     list[dict],
-    dict[int, int],
-    dict[int, int],
 ]:
     dataset = orjson.loads(annotation_path.read_bytes())
     images = sorted(dataset.get("images", []), key=lambda image: image["id"])
@@ -27,19 +25,7 @@ def load_coco_annotations(
     for annotation in annotations:
         annotations_by_image[annotation["image_id"]].append(annotation)
 
-    label_to_category_id = {
-        label_index: category["id"] for label_index, category in enumerate(categories)
-    }
-    category_id_to_label = {
-        category["id"]: label_index for label_index, category in enumerate(categories)
-    }
-    return (
-        images_by_id,
-        annotations_by_image,
-        categories,
-        label_to_category_id,
-        category_id_to_label,
-    )
+    return images_by_id, annotations_by_image, categories
 
 
 def decode_segmentation(segmentation, height: int, width: int):
@@ -51,6 +37,8 @@ def decode_segmentation(segmentation, height: int, width: int):
         counts = encoded.get("counts")
         if isinstance(counts, str):
             encoded["counts"] = counts.encode("utf-8")
+        elif isinstance(counts, list):
+            encoded = coco_mask.frPyObjects(encoded, height, width)
         decoded = coco_mask.decode(encoded)
     else:
         encoded = coco_mask.frPyObjects(segmentation, height, width)

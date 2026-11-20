@@ -36,9 +36,7 @@ def wizard():
 
 @app.command()
 def metrics(
-    metrics_path: Path = typer.Argument(
-        "runs/metrics.csv", exists=True, dir_okay=False
-    ),
+    metrics_path: Path = typer.Argument(..., exists=True, dir_okay=False),
 ):
     """
     Analyze and plot training metrics from a CSV file.
@@ -65,7 +63,7 @@ def analyze(dataset_path: Path):
 def evaluate(
     dataset_path: Path = typer.Argument(..., exists=True, file_okay=False),
     checkpoint_path: Path = typer.Argument(
-        "runs/yolo26-segmentation-nano/weights/best.pt",
+        ...,
         exists=True,
         dir_okay=False,
     ),
@@ -181,12 +179,14 @@ def predict_dir(
         typer.echo(
             f"{result['fallback_count']} files were saved as .png because the original format was not writable"
         )
+    if result["upload_failure_count"]:
+        raise typer.Exit(code=1)
 
 
 @app.command()
 def upload(
     runs_dir: Path = typer.Argument(
-        "runs", exists=True, file_okay=False, help="Training runs directory."
+        ..., exists=True, file_okay=False, help="Directory for the training run."
     ),
     dataset_name: str | None = typer.Option(
         None,
@@ -196,7 +196,7 @@ def upload(
     backend: str = typer.Option(
         YOLO26_BACKEND,
         "--backend",
-        help="Training backend: yolo26 or rfdetr.",
+        help="Training backend: yolo26 or rfdetr. Stored metadata takes precedence.",
     ),
     task: str = typer.Option(
         SEGMENTATION_TASK,
@@ -247,7 +247,6 @@ def upload(
 
     run_id = asyncio.run(
         upload_artifact_bundle(
-            runs_dir=runs_dir,
             dataset_name=resolved_dataset_name,
             artifact_files=artifact_files_for_training(artifacts),
             metadata=metadata,

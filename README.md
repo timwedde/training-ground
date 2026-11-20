@@ -34,6 +34,8 @@ training-ground --help
 training-ground wizard
 ```
 
+Each training run gets a new directory under `runs/`. The wizard prints the checkpoint, ONNX model, and evaluation report paths before upload. Standalone evaluations also create a fresh report for each invocation.
+
 When `YOLO26` is selected, the wizard asks for a model size:
 
 - `Nano`
@@ -87,18 +89,21 @@ CLI overlays and metrics retain one detection per selected query/class pair (the
 
 When the `--upload` flag is provided:
 - **Immediate Project Selector**: The tool automatically attempts to resolve the Roboflow project name from your checkpoint's runs folder metadata (`metadata.json` / `upload_metadata.json`). If it cannot be resolved automatically, you are immediately prompted with a list of your workspace projects sorted by their last updated date. This happens before the model is loaded or compiled so the rest of the execution runs without interruption.
-- **Asynchronous Execution Model**: Model inference and overlay saving run at full GPU/CPU speeds on the main thread, while a concurrent background thread pool (`max_workers=8`) manages temporary COCO annotation generation, polygon coordinate tracing via OpenCV, and quiet uploads.
+- **Asynchronous Execution Model**: The main thread runs inference and saves overlays while up to eight background workers upload images. Inference waits for a free upload slot when Roboflow falls behind. If any upload fails, the command reports the failures and exits with status 1.
 - **Active Learning Support**: Images with predictions are uploaded with generated COCO box or polygon annotations directly to the **Annotate** tab in Roboflow (`is_prediction=True`) for human review. Images without predictions are uploaded bare.
 
 ## CLI examples
 
 ```bash
 training-ground wizard
-training-ground evaluate datasets/<dataset> runs/yolo26-boxes-nano/weights/best.pt --backend yolo26 --task boxes
-training-ground evaluate datasets/<dataset> runs/yolo26-segmentation-nano/weights/best.pt --backend yolo26 --task segmentation
-training-ground evaluate datasets/<dataset> runs/checkpoint_best_ema.pth --backend rfdetr
-training-ground predict-dir ./images ./predictions --checkpoint-path runs/yolo26-boxes-nano/weights/best.pt --backend yolo26 --task boxes
+training-ground evaluate "datasets/DATASET" runs/YOLO_BOX_RUN/weights/best.pt --backend yolo26 --task boxes
+training-ground evaluate "datasets/DATASET" runs/YOLO_SEG_RUN/weights/best.pt --backend yolo26 --task segmentation
+training-ground evaluate "datasets/DATASET" runs/RFDETR_RUN/checkpoint_best_ema.pth --backend rfdetr
+training-ground metrics runs/RFDETR_RUN/metrics.csv
+training-ground predict-dir ./images ./predictions --checkpoint-path runs/YOLO_BOX_RUN/weights/best.pt --backend yolo26 --task boxes
 training-ground predict-dir ./false-negatives ./predictions --checkpoint-path model.pth --backend rfdetr --upload
-training-ground upload runs/yolo26-boxes-nano --backend yolo26 --task boxes
-training-ground upload runs --backend rfdetr
+training-ground upload runs/YOLO_BOX_RUN
+training-ground upload runs/RFDETR_RUN
 ```
+
+Replace the uppercase names with the dataset and run directories printed by the wizard. To tag examples from an RF-DETR evaluation in `tag-bad-images.ipynb`, set `checkpoint_path` to the checkpoint you evaluated.

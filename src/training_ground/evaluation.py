@@ -1,6 +1,9 @@
 import csv
 import json
+from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Any, Protocol
 from urllib.parse import quote
 
@@ -35,7 +38,7 @@ CLASS_PRED_COLORS = {
 
 
 class Predictor(Protocol):
-    class_names: list[str]
+    class_id_to_name: dict[int, str]
 
     def predict(self, image_path: str, threshold: float | None): ...
 
@@ -50,9 +53,11 @@ class YOLO26PredictorAdapter:
             self._model.model, "names", {}
         )
         if isinstance(names, dict):
-            self.class_names = [str(names[index]) for index in sorted(names)]
+            self.class_id_to_name = {
+                int(index): str(name) for index, name in names.items()
+            }
         else:
-            self.class_names = [str(name) for name in names]
+            self.class_id_to_name = dict(enumerate(map(str, names)))
 
     def predict(self, image_path: str, threshold: float | None):
         results = self._model.predict(
@@ -60,11 +65,11 @@ class YOLO26PredictorAdapter:
             conf=0.5 if threshold is None else threshold,
             verbose=False,
             imgsz=640,
+            retina_masks=True,
         )
         result = results[0]
         boxes = result.boxes
         masks = result.masks
-        orig_height, orig_width = result.orig_shape
 
         xyxy = (
             boxes.xyxy.detach().cpu().numpy()
@@ -81,19 +86,11 @@ class YOLO26PredictorAdapter:
             if boxes is not None and boxes.cls is not None
             else np.zeros((0,), dtype=np.int32)
         )
-        mask_data = None
-        if masks is not None and masks.data is not None:
-            import cv2
-
-            resized_masks = []
-            for mask in masks.data.detach().cpu().numpy():
-                resized = cv2.resize(
-                    mask.astype(np.float32),
-                    (orig_width, orig_height),
-                    interpolation=cv2.INTER_NEAREST,
-                )
-                resized_masks.append(resized >= 0.5)
-            mask_data = np.asarray(resized_masks, dtype=bool)
+        mask_data = (
+            masks.data.detach().cpu().numpy().astype(bool, copy=False)
+            if masks is not None and masks.data is not None
+            else None
+        )
 
         return DetectionBatch(
             xyxy=xyxy,
@@ -114,7 +111,13 @@ class RFDETRPredictorAdapter:
                 "pole=0.90, stick=0.55, tree=0.60; centered letterbox."
             )
         self._predictor = model.inference(compile=False)
-        self.class_names = self._predictor.class_names
+        if self.camera_profile:
+            self.class_id_to_name = {
+                slot: model.class_names[slot] for slot in (1, 2, 3)
+            }
+        else:
+            context = self._predictor._prediction_context()
+            self.class_id_to_name = context.class_id_to_name
 
     def predict(self, image_path: str, threshold: float | None):
         if self.camera_profile:
@@ -139,50 +142,48 @@ class DetectionBatch:
         return len(self.class_id)
 
 
-def create_rfdetr_predictor(
+def load_rfdetr_checkpoint(
     checkpoint_path: Path,
-    model=None,
     model_size: str | None = None,
     task: Task = SEGMENTATION_TASK,
-) -> Predictor:
-    if model is None:
-        import rfdetr
-        import rfdetr.detr as rfdetr_detr
-        from rfdetr.config import ModelConfig
+):
+    import rfdetr
+    import rfdetr.detr as rfdetr_detr
+    from rfdetr.config import ModelConfig
 
-        typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
-        # Preserve checkpoint architecture (including mask resolution), but use
-        # this machine's default device rather than the saved training device.
-        device = ModelConfig.model_fields["device"].default
-        try:
-            model = rfdetr.from_checkpoint(checkpoint_path.resolve(), device=device)
-        except ValueError as exc:
-            if "Could not infer model class from checkpoint" not in str(exc):
-                raise
+    typer.echo(f"Loading RF-DETR model from checkpoint: {checkpoint_path}")
+    # Preserve checkpoint architecture (including mask resolution), but use
+    # this machine's default device rather than the saved training device.
+    device = ModelConfig.model_fields["device"].default
+    try:
+        model = rfdetr.from_checkpoint(checkpoint_path.resolve(), device=device)
+    except ValueError as exc:
+        if "Could not infer model class from checkpoint" not in str(exc):
+            raise
 
-            legacy_model_size = model_size or "nano"
-            typer.echo(
-                "Checkpoint does not contain self-describing RF-DETR model metadata; "
-                f"falling back to --model-size={legacy_model_size}."
-            )
-            _, constructor_name = rfdetr_models_for_task(task)[legacy_model_size]
-            constructor = getattr(rfdetr_detr, constructor_name)
-            model = constructor(
-                pretrain_weights=str(checkpoint_path.resolve()), device=device
-            )
+        legacy_model_size = model_size or "nano"
+        typer.echo(
+            "Checkpoint does not contain self-describing RF-DETR model metadata; "
+            f"falling back to --model-size={legacy_model_size}."
+        )
+        _, constructor_name = rfdetr_models_for_task(task)[legacy_model_size]
+        constructor = getattr(rfdetr_detr, constructor_name)
+        model = constructor(
+            pretrain_weights=str(checkpoint_path.resolve()), device=device
+        )
 
-        model_config = getattr(model, "model_config", None)
-        if model_config is not None:
-            typer.echo(
-                "RF-DETR checkpoint architecture: "
-                f"model={type(model).__name__}, "
-                f"resolution={getattr(model_config, 'resolution', 'unknown')}, "
-                "mask_downsample_ratio="
-                f"{getattr(model_config, 'mask_downsample_ratio', 'unknown')}, "
-                f"num_queries={getattr(model_config, 'num_queries', 'unknown')}, "
-                f"num_select={getattr(model_config, 'num_select', 'unknown')}"
-            )
-    return RFDETRPredictorAdapter(model)
+    model_config = getattr(model, "model_config", None)
+    if model_config is not None:
+        typer.echo(
+            "RF-DETR checkpoint architecture: "
+            f"model={type(model).__name__}, "
+            f"resolution={getattr(model_config, 'resolution', 'unknown')}, "
+            "mask_downsample_ratio="
+            f"{getattr(model_config, 'mask_downsample_ratio', 'unknown')}, "
+            f"num_queries={getattr(model_config, 'num_queries', 'unknown')}, "
+            f"num_select={getattr(model_config, 'num_select', 'unknown')}"
+        )
+    return model
 
 
 def create_yolo26_predictor(checkpoint_path: Path) -> Predictor:
@@ -192,15 +193,14 @@ def create_yolo26_predictor(checkpoint_path: Path) -> Predictor:
 def create_model(
     checkpoint_path: Path,
     backend: Backend,
-    model=None,
     model_size: str | None = None,
     task: Task = SEGMENTATION_TASK,
 ) -> Predictor:
     if backend == YOLO26_BACKEND:
         return create_yolo26_predictor(checkpoint_path)
     if backend == RFDETR_BACKEND:
-        return create_rfdetr_predictor(
-            checkpoint_path, model=model, model_size=model_size, task=task
+        return RFDETRPredictorAdapter(
+            load_rfdetr_checkpoint(checkpoint_path, model_size=model_size, task=task)
         )
     raise ValueError(f"Unsupported backend: {backend}")
 
@@ -476,11 +476,17 @@ def build_pred_items(
     pred_items = []
     for index in range(len(detections)):
         class_id = int(detections.class_id[index])
-        mapped_category_id = label_to_category_id.get(class_id, class_id)
+        if class_id not in label_to_category_id:
+            raise ValueError(
+                f"Prediction class ID {class_id} has no matching category."
+            )
+        mapped_category_id = label_to_category_id[class_id]
         bbox_xyxy = [float(v) for v in detections.xyxy[index].tolist()]
         score = float(detections.confidence[index])
         mask = (
-            detections.mask[index].astype(bool) if detections.mask is not None else None
+            detections.mask[index].astype(bool, copy=False)
+            if detections.mask is not None
+            else None
         )
         pred_items.append(
             {
@@ -500,23 +506,21 @@ def build_pred_items(
 def build_label_to_category_id(
     model: Predictor,
     categories: list[dict],
-    backend: Backend,
-    fallback_mapping: dict[int, int],
 ) -> dict[int, int]:
-    if backend == RFDETR_BACKEND:
-        return fallback_mapping
-
-    category_name_to_id = {
-        str(category["name"]): int(category["id"]) for category in categories
+    category_name_to_id = {}
+    for category in categories:
+        name = category["name"]
+        if name in category_name_to_id:
+            raise ValueError(f"COCO class name {name!r} is ambiguous.")
+        category_name_to_id[name] = category["id"]
+    model_names = model.class_id_to_name
+    if len(set(model_names.values())) != len(model_names):
+        raise ValueError("Model class names are ambiguous.")
+    return {
+        class_id: category_name_to_id[name]
+        for class_id, name in model_names.items()
+        if name in category_name_to_id
     }
-    mapping: dict[int, int] = {}
-    for index, name in enumerate(getattr(model, "class_names", []) or []):
-        if name not in category_name_to_id:
-            raise ValueError(
-                f"YOLO26 class '{name}' is missing from COCO annotations. Available classes: {sorted(category_name_to_id)}"
-            )
-        mapping[index] = category_name_to_id[name]
-    return mapping
 
 
 def resolve_roboflow_project(checkpoint_path: Path, project_name: str | None = None) -> str:
@@ -542,10 +546,9 @@ def resolve_roboflow_project(checkpoint_path: Path, project_name: str | None = N
             break
 
     if not project_name:
-        import roboflow
         import questionary
+        import roboflow
         from questionary import Choice
-        from concurrent.futures import ThreadPoolExecutor
 
         roboflow.login()
         rf = roboflow.Roboflow()
@@ -685,19 +688,26 @@ def upload_single_image(
                 anno_path = Path(temp_dir) / "_annotations.coco.json"
                 anno_path.write_text(json.dumps(coco_data), encoding="utf-8")
 
-                project.upload(
+                results = project.upload(
                     image_path=str(image_path),
                     annotation_path=str(anno_path),
                     is_prediction=True,
                 )
         else:
-            project.upload(
+            results = project.upload(
                 image_path=str(image_path),
                 is_prediction=True,
             )
-        return image_path.name, True, None
-    except Exception as e:
-        return image_path.name, False, str(e)
+        if (
+            len(results) != 1
+            or not results[0]["image"]
+            or (pred_items and results[0]["annotation"] is None)
+        ):
+            return str(image_path), False, "Roboflow did not confirm the upload."
+        return str(image_path), True, None
+    except Exception as exc:
+        # The SDK may embed a request URL with credentials in the exception.
+        return str(image_path), False, type(exc).__name__
 
 
 
@@ -715,7 +725,17 @@ def run_prediction_directory(
     if not input_dir.exists() or not input_dir.is_dir():
         raise typer.BadParameter(f"Input directory does not exist: {input_dir}")
 
+    input_root = input_dir.resolve()
+    output_root = output_dir.resolve()
+    if output_root == input_root:
+        raise typer.BadParameter("Output directory must differ from the input directory.")
     image_paths = iter_image_paths(input_dir)
+    if output_root.is_relative_to(input_root):
+        image_paths = [
+            path
+            for path in image_paths
+            if not path.resolve().is_relative_to(output_root)
+        ]
     if not image_paths:
         raise typer.BadParameter(
             "No supported images found. Expected JPEG, PNG, AVIF, or WEBP files."
@@ -734,18 +754,25 @@ def run_prediction_directory(
     output_dir.mkdir(parents=True, exist_ok=True)
     model = create_model(checkpoint_path, backend, model_size=model_size, task=task)
 
-    category_names = {
-        index: str(name)
-        for index, name in enumerate(getattr(model, "class_names", []) or [])
-    }
+    category_names = model.class_id_to_name
     label_to_category_id = {index: index for index in category_names}
 
     fallback_count = 0
     saved_paths: list[Path] = []
-    futures = []
+    pending = set()
+    upload_workers = 8
+    upload_executor = ThreadPoolExecutor(max_workers=upload_workers) if upload else None
+    uploaded = upload_failures = 0
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    upload_executor = ThreadPoolExecutor(max_workers=8) if upload else None
+    def record_uploads(completed):
+        nonlocal uploaded, upload_failures
+        for future in completed:
+            image_name, success, error = future.result()
+            if success:
+                uploaded += 1
+            else:
+                upload_failures += 1
+                typer.echo(f"Failed to upload {image_name}: {error}", err=True)
 
     try:
         typer.echo(f"Running inference on {len(image_paths)} images from {input_dir}")
@@ -789,28 +816,21 @@ def run_prediction_directory(
                     saved_paths.append(saved_path)
 
                 if upload_executor is not None and project is not None:
-                    future = upload_executor.submit(
-                        upload_single_image,
-                        project,
-                        image_path,
-                        pred_items,
+                    if len(pending) == upload_workers:
+                        completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        record_uploads(completed)
+                    pending.add(
+                        upload_executor.submit(
+                            upload_single_image, project, image_path, pred_items
+                        )
                     )
-                    futures.append(future)
+        record_uploads(wait(pending).done)
     finally:
         if upload_executor is not None:
-            upload_executor.shutdown(wait=False)
+            upload_executor.shutdown(cancel_futures=True)
 
-    if futures:
-        typer.echo(f"\nUploading {len(futures)} images to Roboflow concurrently...")
-        success_count = 0
-        with typer.progressbar(as_completed(futures), length=len(futures), label="Uploading to Roboflow") as progress:
-            for future in progress:
-                img_name, success, err = future.result()
-                if success:
-                    success_count += 1
-                else:
-                    typer.echo(f"\nFailed to upload {img_name}: {err}", err=True)
-        typer.echo(f"Successfully uploaded {success_count} / {len(futures)} files.")
+    if upload:
+        typer.echo(f"Uploaded {uploaded} of {len(image_paths)} images to Roboflow.")
 
     return {
         "image_count": len(image_paths),
@@ -818,6 +838,7 @@ def run_prediction_directory(
         "saved_paths": saved_paths,
         "output_dir": output_dir,
         "fallback_count": fallback_count,
+        "upload_failure_count": upload_failures,
     }
 
 
@@ -834,14 +855,23 @@ def run_evaluation(
     task: Task = SEGMENTATION_TASK,
 ) -> Path:
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
-    images_by_id, annotations_by_image, categories, coco_label_to_category_id, _ = (
-        load_coco_annotations(annotation_path)
+    images_by_id, annotations_by_image, categories = load_coco_annotations(
+        annotation_path
     )
 
-    output_dir = output_dir or (
-        checkpoint_path.parent / f"{checkpoint_path.stem}_{split_dir.name}_evaluation"
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir is None:
+        output_dir = (
+            checkpoint_path.parent
+            / f"{checkpoint_path.stem}_{split_dir.name}_evaluation"
+        )
+        try:
+            output_dir.mkdir(parents=True)
+        except FileExistsError:
+            output_dir = Path(
+                mkdtemp(prefix=f"{output_dir.name}-", dir=output_dir.parent)
+            )
+    else:
+        output_dir.mkdir(parents=True)
     overlays_dir = output_dir / "overlays"
     overlays_dir.mkdir(parents=True, exist_ok=True)
 
@@ -860,12 +890,7 @@ def run_evaluation(
         )
 
     category_names = {category["id"]: category["name"] for category in categories}
-    label_to_category_id = build_label_to_category_id(
-        model=model,
-        categories=categories,
-        backend=backend,
-        fallback_mapping=coco_label_to_category_id,
-    )
+    label_to_category_id = build_label_to_category_id(model, categories)
 
     image_records = [images_by_id[image_id] for image_id in sorted(images_by_id)]
 
@@ -873,7 +898,6 @@ def run_evaluation(
     segm_results: list[dict] = []
     per_image_rows: list[dict] = []
     prediction_rows: list[dict] = []
-    overlay_payloads: list[dict] = []
     per_class_counts = {
         category["id"]: {
             "tp": 0,
@@ -881,8 +905,6 @@ def run_evaluation(
             "fn": 0,
             "matched_iou_sum": 0.0,
             "matched_iou_count": 0,
-            "fp_payloads": [],  # Track false positive images per class
-            "fn_payloads": [],  # Track false negative images per class
         }
         for category in categories
     }
@@ -892,7 +914,10 @@ def run_evaluation(
     with typer.progressbar(image_records, label="Running inference") as progress:
         for image_record in progress:
             image_id = image_record["id"]
-            image_path = split_dir / image_record["file_name"]
+            relative_path = Path(image_record["file_name"])
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise ValueError(f"Invalid COCO image path: {relative_path}")
+            image_path = split_dir / relative_path
             gt_annotations = annotations_by_image.get(image_id, [])
             detections = model.predict(str(image_path), threshold=threshold)
 
@@ -947,10 +972,7 @@ def run_evaluation(
             true_positives = 0
             false_positives = 0
 
-            # Track FP items per class for this image
-            fp_items_per_class: dict[int, list] = {
-                cat_id: [] for cat_id in per_class_counts
-            }
+            fp_items_per_class = defaultdict(list)
 
             for pred_item in sorted(
                 pred_items, key=lambda item: item["score"], reverse=True
@@ -1006,10 +1028,7 @@ def run_evaluation(
                 )
 
             false_negatives = 0
-            # Track FN items per class for this image
-            fn_items_per_class: dict[int, list] = {
-                cat_id: [] for cat_id in per_class_counts
-            }
+            fn_items_per_class = defaultdict(list)
             for gt_index, gt_item in enumerate(gt_items):
                 if gt_index not in gt_matched:
                     false_negatives += 1
@@ -1038,35 +1057,33 @@ def run_evaluation(
                     "mean_matched_iou": mean_matched_iou,
                 }
             )
-            overlay_payloads.append(
-                {
-                    "image_path": image_path,
-                    "file_name": image_record["file_name"],
-                    "gt_items": gt_items,
-                    "pred_items": pred_items,
-                    **per_image_rows[-1],
-                }
+            output_path = overlays_dir / relative_path.with_name(
+                f"{relative_path.name}_overlay.jpg"
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            render_overlay(
+                image_path,
+                output_path,
+                gt_items,
+                pred_items,
+                f"F1 {f1:.2f} | P {precision:.2f} | R {recall:.2f} | "
+                f"TP {true_positives} FP {false_positives} FN {false_negatives}",
             )
 
-            # Track FP and FN payloads per class for generating class-specific overlays
-            for category_id, fp_items in fp_items_per_class.items():
-                if fp_items:
-                    per_class_counts[category_id]["fp_payloads"].append(
-                        {
-                            "image_path": image_path,
-                            "file_name": image_record["file_name"],
-                            "fp_items": fp_items,
-                        }
+            for folder, groups, suffix, render in (
+                (false_positives_dir, fp_items_per_class, "fp", render_fp_overlay),
+                (false_negatives_dir, fn_items_per_class, "fn", render_fn_overlay),
+            ):
+                for category_id, items in groups.items():
+                    class_name = category_names[category_id]
+                    class_folder = quote(class_name, safe="")
+                    if class_folder in {"", ".", ".."}:
+                        class_folder = f"class_{category_id}_{class_folder}"
+                    target = folder / class_folder / relative_path.with_name(
+                        f"{relative_path.name}_{suffix}.jpg"
                     )
-            for category_id, fn_items in fn_items_per_class.items():
-                if fn_items:
-                    per_class_counts[category_id]["fn_payloads"].append(
-                        {
-                            "image_path": image_path,
-                            "file_name": image_record["file_name"],
-                            "fn_items": fn_items,
-                        }
-                    )
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    render(image_path, target, items, class_name)
 
     coco_gt = COCO(str(annotation_path))
     coco_metrics = {"bbox": run_coco_eval(coco_gt, bbox_results, "bbox")}
@@ -1097,75 +1114,6 @@ def run_evaluation(
         )
 
     per_image_rows.sort(key=score_image)
-    overlay_payloads.sort(key=score_image)
-    for item in overlay_payloads:
-        summary = (
-            f"F1 {item['f1']:.2f} | P {item['precision']:.2f} | R {item['recall']:.2f} | "
-            f"TP {item['true_positives']} FP {item['false_positives']} FN {item['false_negatives']}"
-        )
-        render_overlay(
-            item["image_path"],
-            overlays_dir / f"{Path(item['file_name']).stem}_overlay.jpg",
-            item["gt_items"],
-            item["pred_items"],
-            summary,
-        )
-
-    # Generate false positive overlays per class
-    typer.echo("Generating false positive overlays per class...")
-    for category in categories:
-        category_id = category["id"]
-        class_name = category["name"]
-        counts = per_class_counts[category_id]
-
-        if not counts["fp_payloads"]:
-            continue
-
-        # Create class-specific subdirectory
-        class_fp_dir = false_positives_dir / class_name.replace(" ", "_")
-        class_fp_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save up to max_overlay_images per class, sorted by number of FPs (descending)
-        fp_payloads_sorted = sorted(
-            counts["fp_payloads"], key=lambda x: len(x["fp_items"]), reverse=True
-        )
-
-        for payload in fp_payloads_sorted:
-            output_filename = f"{Path(payload['file_name']).stem}_fp.jpg"
-            render_fp_overlay(
-                payload["image_path"],
-                class_fp_dir / output_filename,
-                payload["fp_items"],
-                class_name,
-            )
-
-    # Generate false negative overlays per class
-    typer.echo("Generating false negative overlays per class...")
-    for category in categories:
-        category_id = category["id"]
-        class_name = category["name"]
-        counts = per_class_counts[category_id]
-
-        if not counts["fn_payloads"]:
-            continue
-
-        # Create class-specific subdirectory
-        class_fn_dir = false_negatives_dir / class_name.replace(" ", "_")
-        class_fn_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save up to max_overlay_images per class, sorted by number of FNs (descending)
-        fn_payloads_sorted = sorted(
-            counts["fn_payloads"], key=lambda x: len(x["fn_items"]), reverse=True
-        )
-
-        for payload in fn_payloads_sorted:
-            output_filename = f"{Path(payload['file_name']).stem}_fn.jpg"
-            render_fn_overlay(
-                payload["image_path"],
-                class_fn_dir / output_filename,
-                payload["fn_items"],
-                class_name,
-            )
 
     write_csv(output_dir / "per_image_metrics.csv", per_image_rows)
     write_csv(output_dir / "prediction_metrics.csv", prediction_rows)
@@ -1194,8 +1142,6 @@ def run_evaluation(
             ),
         },
     }
-    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-
     write_evaluation_plots(
         output_dir=output_dir,
         per_class_rows=per_class_rows,
@@ -1203,5 +1149,6 @@ def run_evaluation(
         prediction_rows=prediction_rows,
         coco_metrics=coco_metrics,
     )
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     return output_dir

@@ -3,6 +3,7 @@ import json
 import re
 import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import httpx
@@ -200,8 +201,8 @@ def resolve_training_artifacts(
 ) -> tuple[TrainingArtifacts, dict[str, Any] | None]:
     from .training_backends import normalize_backend
 
-    normalized_backend = normalize_backend(backend)
     metadata = read_upload_metadata(runs_dir)
+    normalized_backend = normalize_backend((metadata or {}).get("backend") or backend)
     if metadata is not None and metadata.get("task") in {"boxes", "segmentation"}:
         task = metadata["task"]
     rfdetr_models = rfdetr_models_for_task(task)
@@ -346,7 +347,11 @@ async def _upload_large_file(
                         )
                     yield chunk
 
-        response = await client.put(signed_url, content=file_stream())
+        response = await client.put(
+            signed_url,
+            content=file_stream(),
+            headers={"Content-Length": str(file_size)},
+        )
         response.raise_for_status()
 
 
@@ -355,19 +360,36 @@ async def upload_artifacts(
     local_paths: dict[str, Path],
     max_concurrent: int = MAX_CONCURRENT_UPLOADS,
 ) -> None:
+    missing = local_paths.keys() - urls.keys()
+    unexpected = urls.keys() - local_paths.keys()
+    if missing or unexpected:
+        raise ValueError(
+            f"Signed URLs do not match the requested artifacts. "
+            f"Missing: {sorted(missing)}. Unexpected: {sorted(unexpected)}."
+        )
+    if any(not isinstance(url, str) or not url.strip() for url in urls.values()):
+        raise ValueError("The signer returned an invalid upload URL.")
+
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def upload_with_semaphore(artifact: str, signed_url: str) -> None:
         async with semaphore:
             await upload_file_chunked(signed_url, local_paths[artifact], artifact)
 
-    await asyncio.gather(
-        *[
+    results = await asyncio.gather(
+        *(
             upload_with_semaphore(artifact, signed_url)
             for artifact, signed_url in urls.items()
-        ],
-        return_exceptions=False,
+        ),
+        return_exceptions=True,
     )
+    failed = [
+        f"{artifact} ({type(result).__name__})"
+        for artifact, result in zip(urls, results, strict=True)
+        if isinstance(result, BaseException)
+    ]
+    if failed:
+        raise RuntimeError(f"Failed to upload: {', '.join(failed)}.")
 
 
 def zip_directory(source_dir: Path, zip_path: Path, progress: bool = True) -> None:
@@ -385,7 +407,6 @@ def zip_directory(source_dir: Path, zip_path: Path, progress: bool = True) -> No
 
 
 async def upload_artifact_bundle(
-    runs_dir: Path,
     dataset_name: str,
     artifact_files: dict[str, Path],
     metadata: dict[str, Any] | None = None,
@@ -394,19 +415,6 @@ async def upload_artifact_bundle(
     dataset_slug = slugify_dataset_name(dataset_name)
     typer.echo(f"Dataset scope: {dataset_slug}")
 
-    temp_files: list[Path] = []
-    local_paths: dict[str, Path] = {}
-    for artifact_name, source_path in artifact_files.items():
-        if source_path.is_dir():
-            zip_path = runs_dir / artifact_name
-            zip_directory(source_path, zip_path)
-            local_paths[artifact_name] = zip_path
-            temp_files.append(zip_path)
-        else:
-            local_paths[artifact_name] = source_path
-
-    metadata_path = write_upload_metadata(runs_dir, dataset_name, metadata)
-    local_paths.setdefault("metadata.json", metadata_path)
     request_metadata = None
     if metadata is not None:
         request_metadata = {
@@ -415,23 +423,35 @@ async def upload_artifact_bundle(
             if metadata.get(key) is not None
         }
 
-    typer.echo("Requesting upload URLs from object-ledger...")
-    try:
-        run_id, run_prefix, urls = await get_signed_urls(
-            list(local_paths),
-            dataset_name,
-            request_metadata,
-        )
+    with TemporaryDirectory() as temp_dir:
+        staging_dir = Path(temp_dir)
+        local_paths: dict[str, Path] = {}
+        for artifact_name, source_path in artifact_files.items():
+            if source_path.is_dir():
+                zip_path = staging_dir / artifact_name
+                zip_directory(source_path, zip_path)
+                local_paths[artifact_name] = zip_path
+            elif source_path.is_file():
+                local_paths[artifact_name] = source_path
+            else:
+                raise FileNotFoundError(f"Required artifact not found: {source_path}")
+
+        metadata_path = write_upload_metadata(staging_dir, dataset_name, metadata)
+        local_paths.setdefault("metadata.json", metadata_path)
+
+        typer.echo("Requesting upload URLs from object-ledger...")
+        try:
+            run_id, run_prefix, urls = await get_signed_urls(
+                list(local_paths), dataset_name, request_metadata
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Failed to get signed URLs ({type(exc).__name__})."
+            ) from None
+
         typer.echo(f"Assigned scoped run ID: {dataset_slug}-{run_id}")
-    except httpx.HTTPError as exc:
-        typer.echo(f"Failed to get signed URLs: {exc}", err=True)
-        raise
-
-    typer.echo(f"Uploading {len(local_paths)} artifacts to GCS...")
-    await upload_artifacts(urls, local_paths)
-
-    for temp_file in temp_files:
-        temp_file.unlink(missing_ok=True)
+        typer.echo(f"Uploading {len(local_paths)} artifacts to GCS...")
+        await upload_artifacts(urls, local_paths)
 
     typer.echo(f"Successfully uploaded run {dataset_slug}-{run_id} to GCS!")
     typer.echo(f"Location: stm-ai-bucket/{run_prefix}{run_id}/")
@@ -462,7 +482,6 @@ async def upload_training_run(
     )
     metadata = build_training_metadata(dataset_name, artifacts)
     return await upload_artifact_bundle(
-        runs_dir=runs_dir,
         dataset_name=dataset_name,
         artifact_files=artifact_files_for_training(artifacts),
         metadata=metadata,
