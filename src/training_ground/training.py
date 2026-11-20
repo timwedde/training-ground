@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
@@ -317,6 +318,14 @@ def train_yolo26(
     )
     selected_model_name = yolo26_models_for_task(task)[model_size]
     model = YOLO(selected_model_name)
+    workers = 8
+    if tiled:
+        available_cpus = os.process_cpu_count() or 1
+        # Reserve CPU capacity for the trainer and limit the number of prefetched batches.
+        workers = min(16, max(0, available_cpus - 2))
+        typer.echo(
+            f"YOLO26 tiled training requests {workers} loader workers ({available_cpus} available CPUs)."
+        )
     tile_options = (
         {
             "tile": True,
@@ -336,7 +345,7 @@ def train_yolo26(
         batch=-1 if batch_size is None else batch_size,
         imgsz=YOLO26_IMAGE_SIZE,
         patience=10,
-        workers=8,
+        workers=workers,
         project=str(runs_dir.parent),
         name=runs_dir.name,
         # The directory was reserved for this invocation before conversion.

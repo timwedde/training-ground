@@ -34,7 +34,7 @@ For CityWizard or other high-resolution COCO datasets, select **Boxes → YOLO26
 uv run training-ground wizard --dataset-path 'Waste Detection 5928.v34i.coco'
 ```
 
-Training uses overlapping 640 × 640 crops at native pixel scale. Standalone evaluation of a tiled checkpoint needs `--backend yolo26 --task boxes --tiled`. Evaluation merges same-class duplicates across tiles before scoring against the original COCO labels. It reports tile counts and inference time and uses validation to choose the merge IoU and confidence unless the sweep is disabled. An explicit `--threshold` overrides the recommended confidence.
+Training uses overlapping 640 × 640 crops at native pixel scale. The loader requests up to 16 workers based on available CPUs, reserving two for the trainer. Standalone evaluation of a tiled checkpoint needs `--backend yolo26 --task boxes --tiled`. Evaluation merges same-class duplicates across tiles before scoring against the original COCO labels. It reports tile counts and inference time and uses validation to choose the merge IoU and confidence unless the sweep is disabled. An explicit `--threshold` overrides the recommended confidence.
 
 The ONNX model takes one 640 × 640 tile and returns NMS-free detection rows. The grid, preprocessing, output columns, merge rules, and ordered labels are saved in the evaluation's `recommended_settings.json` for the TensorRT runtime.
 
