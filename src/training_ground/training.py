@@ -3,13 +3,16 @@ import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 
+import cv2
 import typer
 import yaml
 
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .predictors import RFDETRPredictorAdapter, load_rfdetr_checkpoint
+from .tiling import pad_to_tile
 from .training_backends import (
+    BOX_TASK,
     RFDETR_BACKEND,
     SEGMENTATION_TASK,
     YOLO26_BACKEND,
@@ -64,8 +67,11 @@ def _normalize_coco_annotations(
     output_path.write_text(json.dumps(normalized_dataset), encoding="utf-8")
 
 
-def prepare_yolo26_dataset(dataset_path: Path, yolo_root: Path, task: Task) -> Path:
+def prepare_yolo26_dataset(
+    dataset_path: Path, yolo_root: Path, task: Task, *, tiled: bool = False
+) -> Path:
     from ultralytics.data.converter import convert_coco
+    from ultralytics.utils.patches import imread
 
     if yolo_root.exists():
         raise FileExistsError(yolo_root)
@@ -83,7 +89,7 @@ def prepare_yolo26_dataset(dataset_path: Path, yolo_root: Path, task: Task) -> P
         raise ValueError("Training COCO categories must have unique class names.")
     class_ids = {name: index for index, name in enumerate(class_names, start=1)}
 
-    images_by_split: dict[str, list[Path]] = {}
+    images_by_split: dict[str, list[tuple[Path, Path]]] = {}
     with TemporaryDirectory() as temp_dir:
         annotations_dir = Path(temp_dir)
         for split in splits:
@@ -94,16 +100,25 @@ def prepare_yolo26_dataset(dataset_path: Path, yolo_root: Path, task: Task) -> P
                     (dataset_path / split / "_annotations.coco.json").read_bytes()
                 )
             )
-            _normalize_coco_annotations(
-                dataset, annotations_dir / f"{split}.json", class_ids
-            )
-            image_paths = [Path(image["file_name"]) for image in dataset["images"]]
-            for path in image_paths:
+            image_paths = []
+            for image in dataset["images"]:
+                path = Path(image["file_name"])
                 if path.is_absolute() or ".." in path.parts:
                     raise ValueError(f"Invalid COCO image path: {path}")
                 if not (dataset_path / split / path).is_file():
                     raise FileNotFoundError(dataset_path / split / path)
+                prepared_path = path
+                if tiled and min(image["width"], image["height"]) < YOLO26_IMAGE_SIZE:
+                    # Padding before YOLO loads the image prevents its loader from upscaling small crops.
+                    prepared_path = path.with_name(f"{path.name}.png")
+                    image["file_name"] = prepared_path.as_posix()
+                    image["width"] = max(image["width"], YOLO26_IMAGE_SIZE)
+                    image["height"] = max(image["height"], YOLO26_IMAGE_SIZE)
+                image_paths.append((path, prepared_path))
             images_by_split[split] = image_paths
+            _normalize_coco_annotations(
+                dataset, annotations_dir / f"{split}.json", class_ids
+            )
 
         convert_coco(
             labels_dir=str(annotations_dir),
@@ -116,8 +131,18 @@ def prepare_yolo26_dataset(dataset_path: Path, yolo_root: Path, task: Task) -> P
         source_split_dir = dataset_path / split_name
         target_split_dir = yolo_root / "images" / split_name
         target_split_dir.mkdir(parents=True, exist_ok=True)
-        for path in image_paths:
-            _copy_or_link_image(source_split_dir / path, target_split_dir / path)
+        for path, prepared_path in image_paths:
+            source = source_split_dir / path
+            target = target_split_dir / prepared_path
+            if path == prepared_path:
+                _copy_or_link_image(source, target)
+            else:
+                image = imread(str(source))
+                if image is None:
+                    raise ValueError(f"Could not read image: {source}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not cv2.imwrite(str(target), pad_to_tile(image)):
+                    raise OSError(f"Could not write padded image: {target}")
 
     data_yaml_path = yolo_root / "data.yaml"
     data_yaml_path.write_text(
@@ -279,13 +304,32 @@ def train_yolo26(
     model_size: str,
     *,
     batch_size: int | None = None,
+    tiled: bool = False,
 ) -> TrainingArtifacts:
     from ultralytics import YOLO
 
-    runs_dir = create_run_directory(yolo26_run_name(task, model_size))
-    data_yaml_path = prepare_yolo26_dataset(dataset_path, runs_dir / "dataset", task)
+    if tiled and task != BOX_TASK:
+        raise typer.BadParameter("Tiling is available only for YOLO26 box detection.")
+    run_name = yolo26_run_name(task, model_size)
+    runs_dir = create_run_directory(f"{run_name}-tiled" if tiled else run_name)
+    data_yaml_path = prepare_yolo26_dataset(
+        dataset_path, runs_dir / "dataset", task, tiled=tiled
+    )
     selected_model_name = yolo26_models_for_task(task)[model_size]
     model = YOLO(selected_model_name)
+    tile_options = (
+        {
+            "tile": True,
+            "nms": False,
+            "mosaic": 0.0,
+            "close_mosaic": 0,
+            "scale": 0.0,
+            "translate": 0.0,
+            "multi_scale": 0.0,
+        }
+        if tiled
+        else {}
+    )
     model.train(
         data=str(data_yaml_path),
         epochs=200,
@@ -297,6 +341,7 @@ def train_yolo26(
         name=runs_dir.name,
         # The directory was reserved for this invocation before conversion.
         exist_ok=True,
+        **tile_options,
     )
 
     trainer = getattr(model, "trainer", None)
@@ -326,7 +371,12 @@ def train_yolo26(
     typer.echo("Exporting YOLO26 model to ONNX...")
     export_model = YOLO(str(best_path))
     exported_path = Path(
-        export_model.export(format="onnx", imgsz=YOLO26_IMAGE_SIZE, simplify=True)
+        export_model.export(
+            format="onnx",
+            imgsz=YOLO26_IMAGE_SIZE,
+            simplify=True,
+            nms=False if tiled else None,
+        )
     )
     onnx_path = runs_dir / "model.onnx"
     if exported_path.resolve() != onnx_path.resolve():
@@ -346,6 +396,7 @@ def train_yolo26(
         backend=YOLO26_BACKEND,
         task=task,
         output_dir=eval_dir,
+        tiled=tiled,
     )
 
     return TrainingArtifacts(

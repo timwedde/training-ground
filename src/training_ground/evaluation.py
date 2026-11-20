@@ -3,6 +3,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from tempfile import mkdtemp
+from time import perf_counter
 from urllib.parse import quote
 
 import numpy as np
@@ -23,11 +24,20 @@ from .overlays import render_fn_overlay, render_fp_overlay, render_overlay
 from .predictors import (
     DEFAULT_CONFIDENCE_THRESHOLD,
     Predictor,
+    YOLO26PredictorAdapter,
     build_pred_items,
     create_model,
 )
 from .settings_sweep import CONFIDENCE_FLOOR, SETTINGS_REPORT, write_settings_report
-from .training_backends import RFDETR_BACKEND, SEGMENTATION_TASK, Backend, Task
+from .tiling import DEFAULT_MERGE_IOU
+from .training_backends import (
+    BOX_TASK,
+    RFDETR_BACKEND,
+    SEGMENTATION_TASK,
+    YOLO26_BACKEND,
+    Backend,
+    Task,
+)
 
 COCO_CONFIDENCE_FLOOR = CONFIDENCE_FLOOR
 
@@ -92,7 +102,11 @@ def run_evaluation(
     model_size: str | None = None,
     task: Task = SEGMENTATION_TASK,
     settings_sweep: bool = True,
+    tiled: bool = False,
 ) -> Path:
+    if tiled and (backend != YOLO26_BACKEND or task != BOX_TASK):
+        raise typer.BadParameter("Tiling is available only for YOLO26 box detection.")
+
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
     images_by_id, annotations_by_image, categories = load_coco_annotations(
         annotation_path
@@ -126,11 +140,23 @@ def run_evaluation(
             backend,
             model_size=model_size,
             task=task,
+            tiled=tiled,
         )
 
     camera_profile = getattr(model, "camera_profile", False)
     operating_threshold = threshold
     camera_thresholds = None
+    tiled_model = (
+        model if isinstance(model, YOLO26PredictorAdapter) and model.tiled else None
+    )
+    if tiled_model is not None:
+        report = write_settings_report(
+            output_dir, dataset_path, model, task, iou_threshold, settings_sweep
+        )
+        recommended = report["sweep"].get("recommended")
+        merge_iou = recommended["nms_iou"] if recommended else DEFAULT_MERGE_IOU
+        if operating_threshold is None and recommended:
+            operating_threshold = recommended["confidence"]
     if operating_threshold is None:
         if camera_profile:
             from .camera_inference import CLASS_THRESHOLDS
@@ -174,7 +200,19 @@ def run_evaluation(
             gt_annotations = annotations_by_image.get(image_id, [])
             # Lower the inference cutoff once, then apply the two report thresholds
             # independently to the same detections.
-            detections = model.predict(str(image_path), threshold=inference_threshold)
+            tile_metrics = {}
+            if tiled_model is None:
+                detections = model.predict(
+                    str(image_path), threshold=inference_threshold
+                )
+            else:
+                start = perf_counter()
+                tiles = tiled_model.predict_tiles(str(image_path), inference_threshold)
+                detections = tiled_model.merge_tiles(tiles, merge_iou)
+                tile_metrics = {
+                    "tile_count": len(tiles),
+                    "inference_ms": (perf_counter() - start) * 1000,
+                }
             scores = detections.confidence
             cutoff = operating_threshold
             if camera_thresholds is not None:
@@ -280,6 +318,7 @@ def run_evaluation(
                     "recall": recall,
                     "f1": f1,
                     "mean_matched_iou": mean_matched_iou,
+                    **tile_metrics,
                 }
             )
             output_path = overlays_dir / relative_path.with_name(
@@ -376,6 +415,17 @@ def run_evaluation(
             name: camera_thresholds[class_id]
             for class_id, name in model.class_id_to_name.items()
         }
+    if tiled_model is not None:
+        summary["tiling"] = {
+            **report["model"]["tiling"],
+            "merge_iou": merge_iou,
+            "mean_tiles_per_image": safe_divide(
+                sum(row["tile_count"] for row in per_image_rows), len(per_image_rows)
+            ),
+            "mean_inference_ms_per_image": safe_divide(
+                sum(row["inference_ms"] for row in per_image_rows), len(per_image_rows)
+            ),
+        }
     write_evaluation_plots(
         output_dir=output_dir,
         per_class_rows=per_class_rows,
@@ -384,9 +434,10 @@ def run_evaluation(
         coco_metrics=coco_metrics,
         coco_confidence_floor=COCO_CONFIDENCE_FLOOR,
     )
-    write_settings_report(
-        output_dir, dataset_path, model, task, iou_threshold, settings_sweep
-    )
+    if tiled_model is None:
+        write_settings_report(
+            output_dir, dataset_path, model, task, iou_threshold, settings_sweep
+        )
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     return output_dir

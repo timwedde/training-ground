@@ -35,11 +35,19 @@ def wizard(
         int | None,
         typer.Option(min=1, help="Override automatic training batch sizing."),
     ] = None,
+    dataset_path: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Use a local COCO dataset and keep the run local.",
+        ),
+    ] = None,
 ):
     """
     Complete a full training run.
     """
-    run_wizard(batch_size=batch_size)
+    run_wizard(batch_size=batch_size, dataset_path=dataset_path)
 
 
 @app.command()
@@ -79,7 +87,7 @@ def evaluate(
         typer.Option(
             min=0.0,
             max=1.0,
-            help="Confidence for precision, recall, F1, and overlays. Defaults to STM class thresholds or 0.5. COCO AP uses a separate 0.001 floor.",
+            help="Confidence for precision, recall, F1, and overlays. Defaults to the tiled validation recommendation, STM class thresholds, or 0.5. COCO AP uses a separate 0.001 floor.",
         ),
     ] = None,
     iou_threshold: Annotated[
@@ -101,6 +109,13 @@ def evaluate(
         bool,
         typer.Option(help="Tune confidence and supported NMS settings on validation."),
     ] = True,
+    tiled: Annotated[
+        bool,
+        typer.Option(
+            "--tiled",
+            help="Evaluate YOLO26 boxes using overlapping native-resolution tiles.",
+        ),
+    ] = False,
 ):
     """
     Evaluate a model checkpoint on a dataset split.
@@ -115,6 +130,7 @@ def evaluate(
         model_size=model_size,
         task=normalize_task(task),
         settings_sweep=settings_sweep,
+        tiled=tiled,
     )
 
     typer.echo(f"Evaluation complete. Artifacts written to {output_dir}")

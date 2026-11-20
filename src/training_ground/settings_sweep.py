@@ -107,7 +107,7 @@ def write_settings_report(
     task: Task,
     iou_threshold: float,
     sweep: bool,
-) -> None:
+) -> dict:
     architecture = model.model_settings()
     can_sweep_nms = architecture.pop("can_sweep_nms", False)
     classes = [
@@ -146,6 +146,7 @@ def write_settings_report(
     (output_dir / SETTINGS_REPORT).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
+    return report
 
 
 def _sweep_validation(
@@ -174,6 +175,7 @@ def _sweep_validation(
     )
     scores = {iou: ConfidenceSweep() for iou in nms_candidates}
     inclusive = getattr(model, "camera_profile", False)
+    yolo = model if isinstance(model, YOLO26PredictorAdapter) else None
 
     with typer.progressbar(
         image_records.values(), label="Sweeping settings on validation"
@@ -183,9 +185,16 @@ def _sweep_validation(
             ground_truth = build_ground_truth(
                 image, annotations.get(image["id"], []), category_names, task
             )
+            tiles = (
+                yolo.predict_tiles(str(image_path), CONFIDENCE_FLOOR)
+                if yolo is not None and yolo.tiled
+                else None
+            )
             for iou, accumulator in scores.items():
-                if isinstance(model, YOLO26PredictorAdapter) and can_sweep_nms:
-                    detections = model.predict(
+                if tiles is not None:
+                    detections = YOLO26PredictorAdapter.merge_tiles(tiles, iou)
+                elif yolo is not None and can_sweep_nms:
+                    detections = yolo.predict(
                         str(image_path), threshold=CONFIDENCE_FLOOR, iou=iou
                     )
                 else:

@@ -24,14 +24,21 @@ from training_ground.upload import upload_artifact_bundle
 
 
 def write_split(
-    root, split, categories, annotations, filename="nested/sample_name.jpg"
+    root,
+    split,
+    categories,
+    annotations,
+    filename="nested/sample_name.jpg",
+    size=(32, 32),
 ):
     directory = root / split
     image_path = directory / filename
     image_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (32, 32)).save(image_path)
+    Image.new("RGB", size).save(image_path)
     document = {
-        "images": [{"id": 1, "width": 32, "height": 32, "file_name": filename}],
+        "images": [
+            {"id": 1, "width": size[0], "height": size[1], "file_name": filename}
+        ],
         "categories": [
             {"id": category_id, "name": name, "supercategory": "object"}
             for category_id, name in categories
@@ -238,6 +245,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_yolo_adapter_requests_original_resolution_masks(self):
         adapter = YOLO26PredictorAdapter.__new__(YOLO26PredictorAdapter)
+        adapter.tiled = False
         mask = torch.zeros((1, 32, 64), dtype=torch.uint8)
         mask[0, 0, :10] = 1
         result = SimpleNamespace(
@@ -252,6 +260,73 @@ class WorkflowTests(unittest.TestCase):
         predictions = adapter.predict("frame.jpg", None)
         self.assertTrue(adapter._model.predict.call_args.kwargs["retina_masks"])
         np.testing.assert_array_equal(predictions.mask, mask.numpy().astype(bool))
+
+    def test_tiled_yolo_evaluates_original_boxes_and_reuses_validation_predictions(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            box = annotation(9) | {"bbox": [570, 470, 30, 30], "area": 900}
+            for split in ("train", "valid", "test"):
+                write_split(root, split, [(9, "bottle")], [box], size=(1000, 500))
+            data = prepare_yolo26_dataset(root, root / "prepared", BOX_TASK, tiled=True)
+            with Image.open(
+                data.parent / "images/train/nested/sample_name.jpg.png"
+            ) as image:
+                self.assertEqual(image.size, (1000, 640))
+                self.assertEqual(image.getpixel((0, 500)), (114, 114, 114))
+            path = data.parent / "labels/train/nested/sample_name.jpg.txt"
+            np.testing.assert_allclose(
+                [float(value) for value in path.read_text().split()],
+                [0, 585 / 1000, 485 / 640, 30 / 1000, 30 / 640],
+                atol=1e-6,
+            )
+
+            def predict(**kwargs):
+                self.assertEqual(len(kwargs["source"]), 2)
+                self.assertEqual(kwargs["source"][1].shape, (640, 640, 3))
+                self.assertTrue((kwargs["source"][1][500:] == 114).all())
+                rows = [
+                    [[570, 470, 600, 510, 0.4, 0], [50, 505, 60, 530, 0.9, 0]],
+                    [[210, 470, 240, 510, 0.4, 0]],
+                ]
+                return [
+                    SimpleNamespace(boxes=SimpleNamespace(data=torch.tensor(tile)))
+                    for tile in rows
+                ]
+
+            adapter = YOLO26PredictorAdapter.__new__(YOLO26PredictorAdapter)
+            adapter.tiled = True
+            adapter.checkpoint_name = "best.pt"
+            adapter.class_id_to_name = {0: "bottle"}
+            adapter._model = SimpleNamespace(
+                predict=Mock(side_effect=predict),
+                model=None,
+                predictor=None,
+                task="detect",
+            )
+            output = run_evaluation(
+                root,
+                root / "best.pt",
+                "test",
+                None,
+                0.5,
+                model=adapter,
+                backend="yolo26",
+                task=BOX_TASK,
+                tiled=True,
+            )
+            self.assertEqual(adapter._model.predict.call_count, 2)
+            report = json.loads((output / "recommended_settings.json").read_text())
+            self.assertEqual(report["sweep"]["recommended"]["confidence"], 0.39)
+            self.assertEqual(report["sweep"]["recommended"]["nms_iou"], 0.5)
+            with (output / "per_image_metrics.csv").open() as handle:
+                row = next(csv.DictReader(handle))
+            self.assertEqual(row["tile_count"], "2")
+            self.assertEqual(row["true_positives"], "1")
+            self.assertEqual(row["false_positives"], "0")
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertAlmostEqual(summary["coco_metrics"]["bbox"]["stats"][0], 1.0)
 
     def test_coco_decodes_uncompressed_rle(self):
         result = decode_segmentation({"size": [2, 2], "counts": [1, 2, 1]}, 2, 2)

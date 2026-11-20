@@ -57,27 +57,29 @@ def _select(message, choices, default, *, back=True, instruction=None):
     return selected
 
 
-def run_wizard(batch_size: int | None = None):
+def run_wizard(batch_size: int | None = None, dataset_path: Path | None = None):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-    import roboflow
+    local_dataset = dataset_path is not None
+    if not local_dataset:
+        import roboflow
 
-    roboflow.login()
-    rf = roboflow.Roboflow()
+        roboflow.login()
+        rf = roboflow.Roboflow()
 
-    typer.echo("Fetching projects...")
-    workspace = rf.workspace()
+        typer.echo("Fetching projects...")
+        workspace = rf.workspace()
 
-    def fetch_project_info(project_id):
-        project = workspace.project(project_id.split("/")[-1])
-        return project, project.versions()
+        def fetch_project_info(project_id):
+            project = workspace.project(project_id.split("/")[-1])
+            return project, project.versions()
 
-    with ThreadPoolExecutor() as executor:
-        projects = list(executor.map(fetch_project_info, workspace.projects()))
-    if not projects:
-        raise typer.BadParameter("No projects found in your Roboflow workspace.")
+        with ThreadPoolExecutor() as executor:
+            projects = list(executor.map(fetch_project_info, workspace.projects()))
+        if not projects:
+            raise typer.BadParameter("No projects found in your Roboflow workspace.")
 
-    projects.sort(key=lambda p: p[0].updated, reverse=True)
+        projects.sort(key=lambda p: p[0].updated, reverse=True)
 
     project_index = 0
     version_index = 0
@@ -89,8 +91,9 @@ def run_wizard(batch_size: int | None = None):
     model_size = None
     mask_downsample_ratio = 4
     limit_queries = False
+    tiled = False
 
-    step = "project"
+    step = "task" if local_dataset else "project"
     while True:
         if step == "project":
             choices = [
@@ -136,6 +139,7 @@ def run_wizard(batch_size: int | None = None):
                     Choice(title="Segmentation", value=SEGMENTATION_TASK),
                 ],
                 default=task,
+                back=not local_dataset,
             )
             if selected == BACK_CHOICE:
                 step = "version"
@@ -194,9 +198,30 @@ def run_wizard(batch_size: int | None = None):
                 continue
             model_size = selected
             if backend == YOLO26_BACKEND:
-                break
+                if task == SEGMENTATION_TASK:
+                    break
+                step = "tiling"
+                continue
             step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
             continue
+
+        if step == "tiling":
+            selected = _select(
+                "Select YOLO26 image mode",
+                choices=[
+                    Choice(title="Full image", value=False),
+                    Choice(
+                        title="Native-resolution tiles (640 px, 20% overlap)",
+                        value=True,
+                    ),
+                ],
+                default=tiled,
+            )
+            if selected == BACK_CHOICE:
+                step = "model_size"
+                continue
+            tiled = selected is True
+            break
 
         if step == "mask_ratio":
             selected = _select(
@@ -227,14 +252,17 @@ def run_wizard(batch_size: int | None = None):
             limit_queries = selected is True
             break
 
-    assert project is not None
-    assert version is not None
     assert backend is not None
     assert model_size is not None
 
-    dataset_path = Path("datasets") / version.id
-    version.download(model_format="coco", location=str(dataset_path))
-    dataset_name = project.id.split("/")[-1]
+    if dataset_path is None:
+        assert project is not None and version is not None
+        dataset_path = Path("datasets") / version.id
+        version.download(model_format="coco", location=str(dataset_path))
+        dataset_name = project.id.split("/")[-1]
+    else:
+        dataset_path = dataset_path.resolve()
+        dataset_name = dataset_path.name
 
     if backend == RFDETR_BACKEND:
         artifacts = train_rfdetr(
@@ -251,6 +279,7 @@ def run_wizard(batch_size: int | None = None):
             batch_size=batch_size,
             task=task,
             model_size=model_size,
+            tiled=tiled,
         )
 
     metadata = build_training_metadata(dataset_name, artifacts)
@@ -258,6 +287,9 @@ def run_wizard(batch_size: int | None = None):
     typer.echo(f"Checkpoint: {artifacts.primary_checkpoint_path}")
     typer.echo(f"ONNX model: {artifacts.onnx_path}")
     typer.echo(f"Evaluation report: {artifacts.eval_dir}")
+
+    if local_dataset:
+        return
 
     typer.echo("Preparing to upload training run to GCS...")
     run_id = asyncio.run(

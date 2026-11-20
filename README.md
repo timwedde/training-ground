@@ -26,6 +26,18 @@ uv run training-ground wizard
 
 The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and evaluation paths before upload. Training batches are chosen automatically on CUDA. Use `wizard --batch-size 8` to set a fixed size.
 
+## Train on native-resolution tiles
+
+For CityWizard or other high-resolution COCO datasets, select **Boxes → YOLO26 → Native-resolution tiles** in the wizard. To train from the local export and save the run locally:
+
+```sh
+uv run training-ground wizard --dataset-path 'Waste Detection 5928.v34i.coco'
+```
+
+Training uses overlapping 640 × 640 crops at native pixel scale. Standalone evaluation of a tiled checkpoint needs `--backend yolo26 --task boxes --tiled`. Evaluation merges same-class duplicates across tiles before scoring against the original COCO labels. It reports tile counts and inference time and uses validation to choose the merge IoU and confidence unless the sweep is disabled. An explicit `--threshold` overrides the recommended confidence.
+
+The ONNX model takes one 640 × 640 tile and returns NMS-free detection rows. The grid, preprocessing, output columns, merge rules, and ordered labels are saved in the evaluation's `recommended_settings.json` for the TensorRT runtime.
+
 ## Evaluate and review predictions
 
 ```sh

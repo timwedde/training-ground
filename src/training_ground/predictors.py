@@ -1,9 +1,19 @@
+from itertools import batched
 from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
 import typer
 
+from .tiling import (
+    DEFAULT_MERGE_IOU,
+    TILE_BATCH_SIZE,
+    TILE_PADDING_VALUE,
+    merge_tile_boxes,
+    pad_to_tile,
+    restore_boxes,
+    tile_windows,
+)
 from .training_backends import (
     RFDETR_BACKEND,
     SEGMENTATION_TASK,
@@ -26,11 +36,14 @@ class Predictor(Protocol):
 
 
 class YOLO26PredictorAdapter:
-    def __init__(self, checkpoint_path: Path):
+    def __init__(self, checkpoint_path: Path, *, tiled: bool = False):
         from ultralytics import YOLO
 
         typer.echo(f"Loading YOLO26 model from checkpoint: {checkpoint_path}")
         self._model = YOLO(str(checkpoint_path))
+        self.tiled = tiled
+        if tiled and self._model.task != "detect":
+            raise typer.BadParameter("Tiling requires a YOLO26 detection checkpoint.")
         self.checkpoint_name = checkpoint_path.name
         names = getattr(self._model, "names", None) or getattr(
             self._model.model, "names", {}
@@ -82,14 +95,36 @@ class YOLO26PredictorAdapter:
             settings["mask_prototype_size"] = [
                 feature_size * int(stride) for stride in upsample
             ]
+        if self.tiled:
+            settings.update(nms_iou=DEFAULT_MERGE_IOU, can_sweep_nms=True)
+            settings["tiling"] = {
+                "tile_size": YOLO26_IMAGE_SIZE,
+                "stride": round(YOLO26_IMAGE_SIZE * 0.8),
+                "grid": "row_major_snap_to_edge",
+                "padding": {"edges": ["right", "bottom"], "value": TILE_PADDING_VALUE},
+                "input_layout": "NCHW",
+                "input_color": "RGB",
+                "input_scale": 1 / 255,
+                "output_columns": ["x1", "y1", "x2", "y2", "confidence", "class_id"],
+                "merge": "class_aware_cross_tile_nms",
+                "max_detections_scope": "per_tile",
+                "default_confidence": DEFAULT_CONFIDENCE_THRESHOLD,
+            }
         return settings
 
     def predict(
         self, image_path: str, threshold: float | None, *, iou: float | None = None
     ):
+        confidence_cutoff = (
+            DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold
+        )
+        if self.tiled:
+            return self.merge_tiles(
+                self.predict_tiles(image_path, confidence_cutoff), iou
+            )
         results = self._model.predict(
             source=image_path,
-            conf=DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold,
+            conf=confidence_cutoff,
             verbose=False,
             imgsz=YOLO26_IMAGE_SIZE,
             retina_masks=True,
@@ -125,6 +160,38 @@ class YOLO26PredictorAdapter:
             confidence=confidence,
             class_id=class_id,
             mask=mask_data,
+        )
+
+    def predict_tiles(self, image_path: str, threshold: float) -> list[np.ndarray]:
+        from ultralytics.utils.patches import imread
+
+        image = imread(image_path)
+        if image is None:
+            raise FileNotFoundError(f"Could not read image: {image_path}")
+
+        detections = []
+        for windows in batched(tile_windows(*image.shape[:2]), TILE_BATCH_SIZE):
+            crops = [pad_to_tile(image[y1:y2, x1:x2]) for x1, y1, x2, y2 in windows]
+            results = self._model.predict(
+                source=crops,
+                imgsz=YOLO26_IMAGE_SIZE,
+                conf=threshold,
+                rect=False,
+                tile=False,
+                nms=False,
+                verbose=False,
+            )
+            detections.extend(
+                restore_boxes(result.boxes.data.detach().cpu().numpy(), window)
+                for result, window in zip(results, windows, strict=True)
+            )
+        return detections
+
+    @staticmethod
+    def merge_tiles(tiles: list[np.ndarray], iou: float | None) -> DetectionBatch:
+        boxes = merge_tile_boxes(tiles, DEFAULT_MERGE_IOU if iou is None else iou)
+        return DetectionBatch(
+            boxes[:, :4], boxes[:, 4], boxes[:, 5].astype(np.int32), None
         )
 
 
@@ -240,9 +307,11 @@ def create_model(
     backend: Backend,
     model_size: str | None = None,
     task: Task = SEGMENTATION_TASK,
+    *,
+    tiled: bool = False,
 ) -> Predictor:
     if backend == YOLO26_BACKEND:
-        return YOLO26PredictorAdapter(checkpoint_path)
+        return YOLO26PredictorAdapter(checkpoint_path, tiled=tiled)
     if backend == RFDETR_BACKEND:
         return RFDETRPredictorAdapter(
             load_rfdetr_checkpoint(checkpoint_path, model_size=model_size, task=task)
