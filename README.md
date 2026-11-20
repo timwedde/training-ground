@@ -24,7 +24,7 @@ uv sync --locked
 uv run training-ground wizard
 ```
 
-The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and evaluation paths before upload. Training batches are chosen automatically on CUDA. Use `wizard --batch-size 8` to set a fixed size.
+The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and evaluation paths before upload. On CUDA, YOLO26 auto-batching targets 90% of available VRAM. Use `wizard --batch-size 8` to set a fixed size.
 
 ## Train on native-resolution tiles
 

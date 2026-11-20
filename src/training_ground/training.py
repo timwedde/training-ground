@@ -342,7 +342,7 @@ def train_yolo26(
     model.train(
         data=str(data_yaml_path),
         epochs=200,
-        batch=-1 if batch_size is None else batch_size,
+        batch=0.90 if batch_size is None else batch_size,
         imgsz=YOLO26_IMAGE_SIZE,
         patience=10,
         workers=workers,
