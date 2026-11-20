@@ -46,11 +46,11 @@ def decode_segmentation(segmentation, height: int, width: int):
 
     if decoded.ndim == 3:
         decoded = decoded.any(axis=2)
-    return decoded.astype(bool)
+    return decoded.astype(bool, copy=False)
 
 
 def encode_binary_mask(mask):
-    encoded = coco_mask.encode(np.asfortranarray(mask.astype("uint8")))
+    encoded = coco_mask.encode(np.asfortranarray(mask, dtype=np.uint8))
     counts = encoded["counts"]
     if isinstance(counts, bytes):
         encoded["counts"] = counts.decode("utf-8")

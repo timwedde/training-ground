@@ -15,15 +15,12 @@ from PIL import Image
 from typer.testing import CliRunner
 
 from training_ground.coco import decode_segmentation, encode_binary_mask
-from training_ground.evaluation import (
-    DetectionBatch,
-    YOLO26PredictorAdapter,
-    run_evaluation,
-)
+from training_ground.evaluation import run_evaluation
 from training_ground.main import app
+from training_ground.predictors import DetectionBatch, YOLO26PredictorAdapter
+from training_ground.training import prepare_yolo26_dataset
 from training_ground.training_backends import BOX_TASK, SEGMENTATION_TASK
 from training_ground.upload import upload_artifact_bundle
-from training_ground.wizard import prepare_yolo26_dataset
 
 
 def write_split(
@@ -241,7 +238,10 @@ class WorkflowTests(unittest.TestCase):
                 Roboflow=lambda: SimpleNamespace(workspace=lambda: workspace),
             )
             with (
-                patch("training_ground.evaluation.create_model", return_value=model),
+                patch(
+                    "training_ground.directory_prediction.create_model",
+                    return_value=model,
+                ),
                 patch.dict("sys.modules", {"roboflow": roboflow}),
             ):
                 result = CliRunner().invoke(
@@ -281,9 +281,9 @@ class UploadTests(unittest.TestCase):
                 patch(
                     "training_ground.upload.upload_file_chunked", AsyncMock()
                 ) as upload,
+                self.assertRaisesRegex(ValueError, "Signed URLs do not match"),
             ):
-                with self.assertRaisesRegex(ValueError, "Signed URLs do not match"):
-                    asyncio.run(upload_artifact_bundle("test", {archive.name: report}))
+                asyncio.run(upload_artifact_bundle("test", {archive.name: report}))
             upload.assert_not_awaited()
             self.assertEqual(archive.read_bytes(), b"existing archive")
 
@@ -310,16 +310,14 @@ class UploadTests(unittest.TestCase):
             with (
                 patch("training_ground.upload.get_signed_urls", sign),
                 patch("training_ground.upload.upload_file_chunked", send),
-            ):
-                with self.assertRaisesRegex(
+                self.assertRaisesRegex(
                     RuntimeError,
                     r"^Failed to upload: evaluation_artifacts.zip \(RuntimeError\)\.$",
-                ):
-                    asyncio.run(
-                        upload_artifact_bundle(
-                            "test", {"evaluation_artifacts.zip": report}
-                        )
-                    )
+                ),
+            ):
+                asyncio.run(
+                    upload_artifact_bundle("test", {"evaluation_artifacts.zip": report})
+                )
 
             self.assertEqual(len(paths), 2)
             self.assertTrue(all(not path.exists() for path in paths))

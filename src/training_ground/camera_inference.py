@@ -5,9 +5,9 @@ Keep this profile explicit: unrelated training datasets retain RF-DETR defaults.
 """
 
 import numpy as np
+import supervision as sv
 import torch
 import torch.nn.functional as F
-import supervision as sv
 from PIL import Image
 
 IMAGE_SIZE = 432

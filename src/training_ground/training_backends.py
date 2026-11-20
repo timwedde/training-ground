@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+YOLO26_IMAGE_SIZE = 640
+
 Backend = Literal["rfdetr", "yolo26"]
 Task = Literal["boxes", "segmentation"]
 

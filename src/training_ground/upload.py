@@ -457,32 +457,3 @@ async def upload_artifact_bundle(
     typer.echo(f"Location: stm-ai-bucket/{run_prefix}{run_id}/")
 
     return run_id
-
-
-async def upload_training_run(
-    runs_dir: Path,
-    dataset_name: str,
-    checkpoint_ema_path: Path,
-    checkpoint_regular_path: Path,
-    metrics_path: Path,
-    eval_dir: Path,
-    onnx_path: Path,
-) -> int:
-    artifacts = TrainingArtifacts(
-        backend=RFDETR_BACKEND,
-        task=SEGMENTATION_TASK,
-        model_name=rfdetr_models_for_task(SEGMENTATION_TASK)["nano"][0],
-        model_size=None,
-        runs_dir=runs_dir,
-        primary_checkpoint_path=checkpoint_ema_path,
-        secondary_checkpoint_path=checkpoint_regular_path,
-        metrics_path=metrics_path,
-        eval_dir=eval_dir,
-        onnx_path=onnx_path,
-    )
-    metadata = build_training_metadata(dataset_name, artifacts)
-    return await upload_artifact_bundle(
-        dataset_name=dataset_name,
-        artifact_files=artifact_files_for_training(artifacts),
-        metadata=metadata,
-    )
