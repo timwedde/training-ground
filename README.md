@@ -19,7 +19,7 @@ command -v uv || curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ```bash
 sudo apt update && sudo apt-get install -y libxcb-cursor-dev libgl1-mesa-dev \
-&& uv tool install --from git+https://github.com/timwedde/training-ground.git training-ground
+&& uv tool install --python 3.14 --from git+https://github.com/timwedde/training-ground.git training-ground
 ```
 
 ## Run the Tool

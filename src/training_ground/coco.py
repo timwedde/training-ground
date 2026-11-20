@@ -1,13 +1,9 @@
 from collections import defaultdict
 from pathlib import Path
 
-# Initialize faster-coco-eval as drop-in replacement for pycocotools
-import faster_coco_eval
 import numpy as np
 import orjson
-
-faster_coco_eval.init_as_pycocotools()
-from pycocotools import mask as coco_mask  # noqa: E402
+from faster_coco_eval import mask as coco_mask
 
 
 def load_coco_annotations(

@@ -1,11 +1,8 @@
 import io
 from contextlib import redirect_stdout
 
-import faster_coco_eval
-
-faster_coco_eval.init_as_pycocotools()
 import numpy as np
-from pycocotools.cocoeval import COCOeval  # noqa: E402
+from faster_coco_eval import cocoeval
 
 
 def run_coco_eval(coco_gt, results: list[dict], iou_type: str) -> dict[str, object]:
@@ -19,7 +16,7 @@ def run_coco_eval(coco_gt, results: list[dict], iou_type: str) -> dict[str, obje
         }
 
     coco_dt = coco_gt.loadRes(results)
-    evaluator = COCOeval(coco_gt, coco_dt, iou_type)
+    evaluator = cocoeval.COCOeval(coco_gt, coco_dt, iou_type)
     capture = io.StringIO()
     with redirect_stdout(capture):
         evaluator.evaluate()

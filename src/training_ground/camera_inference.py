@@ -126,17 +126,19 @@ def postprocess(boxes, logits, masks, width: int, height: int, threshold=None):
 
 
 @torch.inference_mode()
-def predict(model, image_path: str, threshold: float | None):
+def predict(predictor, image_path: str, threshold: float | None):
+    # The public predict() already postprocesses detections. The camera profile
+    # needs raw outputs to apply its own class selection and mask geometry.
+    context = predictor._prediction_context()
     with Image.open(image_path) as image:
         width, height = image.size
-        inputs = prepare_image(image).to(
-            model.model.device, dtype=model._optimized_dtype
-        )
-    outputs = model.model.inference_model(inputs)
-    if isinstance(outputs, tuple):
-        boxes, logits, masks = outputs
-    else:
-        boxes, logits, masks = (
-            outputs[k] for k in ("pred_boxes", "pred_logits", "pred_masks")
-        )
-    return postprocess(boxes, logits, masks, width, height, threshold)
+        inputs = prepare_image(image).to(context.device)
+    outputs = context.run(inputs)
+    return postprocess(
+        outputs["pred_boxes"],
+        outputs["pred_logits"],
+        outputs["pred_masks"],
+        width,
+        height,
+        threshold,
+    )

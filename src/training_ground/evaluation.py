@@ -4,13 +4,10 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
-import faster_coco_eval
-
-faster_coco_eval.init_as_pycocotools()
 import numpy as np
 import typer
+from faster_coco_eval import COCO
 from PIL import Image, ImageDraw
-from pycocotools.coco import COCO  # noqa: E402
 
 from .coco import decode_segmentation, encode_binary_mask, load_coco_annotations
 from .coco_eval import run_coco_eval
@@ -110,28 +107,24 @@ class RFDETRPredictorAdapter:
     def __init__(self, model):
         from .camera_inference import matches_camera_model
 
-        self._model = model
         self.camera_profile = matches_camera_model(model)
         if self.camera_profile:
             typer.echo(
                 "Camera STM settings: input=432, masks=216, top-k=20, "
                 "pole=0.90, stick=0.55, tree=0.60; centered letterbox."
             )
-        self.class_names = [
-            str(name) for name in getattr(model, "class_names", []) or []
-        ]
-
-    def optimize_for_inference(self) -> None:
-        if hasattr(self._model, "optimize_for_inference"):
-            self._model.optimize_for_inference()
+        self._predictor = model.inference(compile=False)
+        self.class_names = self._predictor.class_names
 
     def predict(self, image_path: str, threshold: float | None):
         if self.camera_profile:
             from .camera_inference import predict
 
-            return predict(self._model, image_path, threshold)
-        return self._model.predict(
-            image_path, threshold=0.5 if threshold is None else threshold
+            return predict(self._predictor, image_path, threshold)
+        return self._predictor.predict(
+            image_path,
+            threshold=0.5 if threshold is None else threshold,
+            include_source_image=False,
         )
 
 
@@ -189,9 +182,7 @@ def create_rfdetr_predictor(
                 f"num_queries={getattr(model_config, 'num_queries', 'unknown')}, "
                 f"num_select={getattr(model_config, 'num_select', 'unknown')}"
             )
-    predictor = RFDETRPredictorAdapter(model)
-    predictor.optimize_for_inference()
-    return predictor
+    return RFDETRPredictorAdapter(model)
 
 
 def create_yolo26_predictor(checkpoint_path: Path) -> Predictor:
@@ -867,9 +858,6 @@ def run_evaluation(
             model_size=model_size,
             task=task,
         )
-    elif backend == RFDETR_BACKEND and hasattr(model, "optimize_for_inference"):
-        model.optimize_for_inference()
-    assert model is not None
 
     category_names = {category["id"]: category["name"] for category in categories}
     label_to_category_id = build_label_to_category_id(

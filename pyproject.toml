@@ -6,33 +6,30 @@ readme = "README.md"
 authors = [
     { name = "Tim Wedde", email = "tim@agrowizard.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
-    "rfdetr==1.8.3",
-    "albumentations>=1.4.24,<3.0.0",
-    "ultralytics>=8.4.26",
-    "typer>=0.24.1",
-    "roboflow>=1.2.16",
+    "rfdetr[train,onnx]==1.12.1",
+    "ultralytics[export-base]>=8.4.216",
+    "typer>=0.25.1",
+    "roboflow>=1.7.3",
     "questionary>=2.1.1",
-    "pycocotools>=2.0.11",
-    "pyyaml>=6.0.2",
-    "faster-coco-eval>=1.7.2",
-    "pytorch-lightning>=2.6.1",
-    "orjson>=3.11.7",
-    "plotly>=6.3.1",
-    "httpx>=0.27.0",
-    "onnxsim>=0.6.2",
-    "onnxruntime>=1.24.4",
+    "pyyaml>=6.0.3",
+    "faster-coco-eval>=1.8.1",
+    "orjson>=3.13.0",
+    "plotly>=7.1.0",
+    "httpx>=0.28.1",
+    "numpy>=2.5.5",
+    "onnx>=1.23.2",
+    "onnxsim[onnxruntime]>=0.8.1",
+    "opencv-python>=5.1.0.95",
+    "pillow>=13.0.0",
+    "supervision>=0.32.0",
+    "torch>=2.15.0",
 ]
 
 [project.scripts]
 training-ground = "training_ground.main:app"
 
 [build-system]
-requires = ["uv_build>=0.10.11,<0.11.0"]
+requires = ["uv_build>=0.13.9,<0.14.0"]
 build-backend = "uv_build"
-
-[dependency-groups]
-dev = [
-    "pyinstrument>=5.1.2",
-]

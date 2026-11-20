@@ -34,13 +34,12 @@ from .training_backends import (
 from .upload import (
     artifact_files_for_training,
     build_training_metadata,
-    resolve_onnx_artifact_path,
     slugify_dataset_name,
     upload_artifact_bundle,
     write_upload_metadata,
 )
 
-DEFAULT_TRAINING_RESOLUTION = 372
+RFDETR_SEG_NANO_RESOLUTION = 372
 DEFAULT_BACKEND = RFDETR_BACKEND
 DEFAULT_RFDETR_MODEL_SIZE = "medium"
 YOLO26_IMAGE_SIZE = 640
@@ -246,9 +245,8 @@ def train_rfdetr(
         f"aug_config={aug_config}, "
         "multi_scale=False, "
         "expanded_scales=False, "
-        "do_random_resize_via_padding=False, "
-        'augmentation_backend="cpu" '
-        "(Albumentations is used only for the required annotation-aware resize)"
+        "scale_jitter=False, "
+        'augmentation_backend="torchvision"'
     )
     typer.echo(
         "RF-DETR dataloader: "
@@ -264,8 +262,8 @@ def train_rfdetr(
             f"linear_resolution=1/{mask_downsample_ratio} of training input"
         )
     train_kwargs = {}
-    if model_size == "nano":
-        train_kwargs["resolution"] = DEFAULT_TRAINING_RESOLUTION
+    if model_size == "nano" and task == SEGMENTATION_TASK:
+        train_kwargs["resolution"] = RFDETR_SEG_NANO_RESOLUTION
 
     model.train(
         dataset_dir=str(dataset_path),
@@ -274,12 +272,14 @@ def train_rfdetr(
         grad_accum_steps=grad_accum_steps,
         early_stopping=True,
         early_stopping_patience=3,
-        progress_bar=True,
+        progress_bar="tqdm",
+        compute_val_loss=True,
+        tensorboard=False,
         aug_config=aug_config,
         multi_scale=False,
         expanded_scales=False,
-        do_random_resize_via_padding=False,
-        augmentation_backend="cpu",
+        scale_jitter=False,
+        augmentation_backend="torchvision",
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
@@ -290,18 +290,13 @@ def train_rfdetr(
 
     runs_dir = Path("runs")
     typer.echo("Exporting model to ONNX...")
-    model.export(output_dir=str(runs_dir))
-    exported_onnx_path = resolve_onnx_artifact_path(
-        runs_dir,
-        default_filename="inference_model.onnx",
+    onnx_path = model.export(
+        output_dir=str(runs_dir), output_name="inference_model", verbose=False
     )
-    onnx_model = onnx.load(exported_onnx_path)
+    onnx_model = onnx.load(onnx_path)
     onnx_model_simp, check = simplify(onnx_model)
     assert check, "Simplified ONNX model could not be validated"
-    onnx.save(onnx_model_simp, exported_onnx_path)
-    onnx_path = runs_dir / "inference_model.onnx"
-    if exported_onnx_path.resolve() != onnx_path.resolve():
-        shutil.copy2(exported_onnx_path, onnx_path)
+    onnx.save(onnx_model_simp, onnx_path)
 
     metrics_path = runs_dir / "metrics.csv"
     typer.echo("Generating training metrics plots...")
