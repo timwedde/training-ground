@@ -2,7 +2,20 @@
 
 Train YOLO26 or RF-DETR models for object detection and instance segmentation using Roboflow datasets. The wizard trains a model, exports ONNX, evaluates the selected checkpoint, and uploads the run artifacts to GCS.
 
-## Run locally
+## Install on an Ubuntu GPU VM
+
+Paste this command to install the tool and Python 3.14. It installs `uv` if needed.
+
+```sh
+sudo apt update && sudo apt-get install -y libxcb-cursor-dev libgl1-mesa-dev ca-certificates curl git \
+&& export PATH="$HOME/.local/bin:$PATH" \
+&& (command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh) \
+&& uv tool install --python 3.14 --from git+https://github.com/timwedde/training-ground.git training-ground
+```
+
+Then run `training-ground wizard`.
+
+## Run from a checkout
 
 From a checkout with `uv` installed, run the following. The project uses Python 3.14.
 
@@ -10,8 +23,6 @@ From a checkout with `uv` installed, run the following. The project uses Python 
 uv sync --locked
 uv run training-ground wizard
 ```
-
-On Ubuntu, install `libxcb-cursor-dev` and `libgl1-mesa-dev` if OpenCV requires system libraries.
 
 The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and evaluation paths before upload. Training batches are chosen automatically on CUDA. Use `wizard --batch-size 8` to set a fixed size.
 
