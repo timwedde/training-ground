@@ -170,6 +170,13 @@ def predict_dir(
     task: Annotated[
         str, typer.Option(help="Model task: boxes or segmentation.")
     ] = SEGMENTATION_TASK,
+    tiled: Annotated[
+        bool,
+        typer.Option(
+            "--tiled",
+            help="Predict YOLO26 boxes using overlapping native-resolution tiles.",
+        ),
+    ] = False,
     upload: Annotated[
         bool, typer.Option("--upload", help="Upload processed samples to Roboflow.")
     ] = False,
@@ -188,6 +195,7 @@ def predict_dir(
         backend=normalize_backend(backend),
         model_size=model_size,
         task=normalize_task(task),
+        tiled=tiled,
         upload=upload,
         project_name=project,
     )

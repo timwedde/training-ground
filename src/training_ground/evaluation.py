@@ -30,14 +30,7 @@ from .predictors import (
 )
 from .settings_sweep import CONFIDENCE_FLOOR, SETTINGS_REPORT, write_settings_report
 from .tiling import DEFAULT_MERGE_IOU
-from .training_backends import (
-    BOX_TASK,
-    RFDETR_BACKEND,
-    SEGMENTATION_TASK,
-    YOLO26_BACKEND,
-    Backend,
-    Task,
-)
+from .training_backends import RFDETR_BACKEND, SEGMENTATION_TASK, Backend, Task
 
 COCO_CONFIDENCE_FLOOR = CONFIDENCE_FLOOR
 
@@ -104,13 +97,18 @@ def run_evaluation(
     settings_sweep: bool = True,
     tiled: bool = False,
 ) -> Path:
-    if tiled and (backend != YOLO26_BACKEND or task != BOX_TASK):
-        raise typer.BadParameter("Tiling is available only for YOLO26 box detection.")
-
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
     images_by_id, annotations_by_image, categories = load_coco_annotations(
         annotation_path
     )
+    if model is None:
+        model = create_model(
+            checkpoint_path,
+            backend,
+            model_size=model_size,
+            task=task,
+            tiled=tiled,
+        )
 
     if output_dir is None:
         output_dir = (
@@ -133,15 +131,6 @@ def run_evaluation(
     false_negatives_dir = output_dir / "false_negatives"
     false_positives_dir.mkdir(parents=True, exist_ok=True)
     false_negatives_dir.mkdir(parents=True, exist_ok=True)
-
-    if model is None:
-        model = create_model(
-            checkpoint_path,
-            backend,
-            model_size=model_size,
-            task=task,
-            tiled=tiled,
-        )
 
     camera_profile = getattr(model, "camera_profile", False)
     operating_threshold = threshold

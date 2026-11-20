@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from training_ground.coco import decode_segmentation, encode_binary_mask
 from training_ground.evaluation import run_evaluation
 from training_ground.main import app
+from training_ground.overlays import render_prediction_overlay
 from training_ground.predictors import DetectionBatch, YOLO26PredictorAdapter
 from training_ground.training import prepare_yolo26_dataset
 from training_ground.training_backends import BOX_TASK, SEGMENTATION_TASK
@@ -304,6 +305,7 @@ class WorkflowTests(unittest.TestCase):
                 model=None,
                 predictor=None,
                 task="detect",
+                names=adapter.class_id_to_name,
             )
             output = run_evaluation(
                 root,
@@ -327,6 +329,39 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(row["false_positives"], "0")
             summary = json.loads((output / "summary.json").read_text())
             self.assertAlmostEqual(summary["coco_metrics"]["bbox"]["stats"][0], 1.0)
+
+            checkpoint = root / "best.pt"
+            checkpoint.touch()
+            predictions = root / "predictions"
+            with (
+                patch("ultralytics.YOLO", return_value=adapter._model),
+                patch(
+                    "training_ground.directory_prediction.render_prediction_overlay",
+                    wraps=render_prediction_overlay,
+                ) as render,
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    [
+                        "predict-dir",
+                        str(root / "test"),
+                        str(predictions),
+                        "--checkpoint-path",
+                        str(checkpoint),
+                        "--backend",
+                        "yolo26",
+                        "--task",
+                        "boxes",
+                        "--tiled",
+                        "--threshold",
+                        "0.3",
+                    ],
+                )
+            self.assertEqual(result.exit_code, 0, result.output)
+            render.assert_called_once()
+            items = render.call_args.kwargs["pred_items"]
+            self.assertEqual([item["bbox"] for item in items], [[570, 470, 600, 500]])
+            self.assertTrue((predictions / "bottle/nested/sample_name.jpg").is_file())
 
     def test_coco_decodes_uncompressed_rle(self):
         result = decode_segmentation({"size": [2, 2], "counts": [1, 2, 1]}, 2, 2)

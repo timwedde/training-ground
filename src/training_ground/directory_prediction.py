@@ -179,6 +179,8 @@ def run_prediction_directory(
     task: Task = SEGMENTATION_TASK,
     upload: bool = False,
     project_name: str | None = None,
+    *,
+    tiled: bool = False,
 ) -> dict:
     if not input_dir.exists() or not input_dir.is_dir():
         raise typer.BadParameter(f"Input directory does not exist: {input_dir}")
@@ -201,6 +203,9 @@ def run_prediction_directory(
             "No supported images found. Expected JPEG, PNG, AVIF, or WEBP files."
         )
 
+    model = create_model(
+        checkpoint_path, backend, model_size=model_size, task=task, tiled=tiled
+    )
     project = None
     if upload:
         import roboflow
@@ -212,8 +217,6 @@ def run_prediction_directory(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    model = create_model(checkpoint_path, backend, model_size=model_size, task=task)
-
     category_names = model.class_id_to_name
     label_to_category_id = {index: index for index in category_names}
 

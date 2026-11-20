@@ -15,6 +15,7 @@ from .tiling import (
     tile_windows,
 )
 from .training_backends import (
+    BOX_TASK,
     RFDETR_BACKEND,
     SEGMENTATION_TASK,
     YOLO26_BACKEND,
@@ -310,6 +311,8 @@ def create_model(
     *,
     tiled: bool = False,
 ) -> Predictor:
+    if tiled and (backend != YOLO26_BACKEND or task != BOX_TASK):
+        raise typer.BadParameter("Tiling is available only for YOLO26 box detection.")
     if backend == YOLO26_BACKEND:
         return YOLO26PredictorAdapter(checkpoint_path, tiled=tiled)
     if backend == RFDETR_BACKEND:
