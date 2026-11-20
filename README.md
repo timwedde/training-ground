@@ -28,10 +28,10 @@ The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and eva
 
 ## Train on native-resolution tiles
 
-For CityWizard or other high-resolution COCO datasets, select **Boxes → YOLO26 → Native-resolution tiles** in the wizard. To train from the local export, run:
+For high-resolution COCO datasets, select **Boxes → YOLO26 → Native-resolution tiles** in the wizard. To use a local dataset, pass its directory.
 
 ```sh
-uv run training-ground wizard --dataset-path 'Waste Detection 5928.v34i.coco'
+uv run training-ground wizard --dataset-path datasets/DATASET
 ```
 
 Training uses overlapping 640 × 640 crops at native pixel scale. The loader requests up to 16 workers based on available CPUs, reserving two for the trainer. Standalone evaluation of a tiled checkpoint needs `--backend yolo26 --task boxes --tiled`. Evaluation merges same-class duplicates across tiles before scoring against the original COCO labels. It reports tile counts and inference time and uses validation to choose the merge IoU and confidence unless the sweep is disabled. An explicit `--threshold` overrides the recommended confidence.
