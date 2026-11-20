@@ -288,9 +288,6 @@ def run_wizard(batch_size: int | None = None, dataset_path: Path | None = None):
     typer.echo(f"ONNX model: {artifacts.onnx_path}")
     typer.echo(f"Evaluation report: {artifacts.eval_dir}")
 
-    if local_dataset:
-        return
-
     typer.echo("Preparing to upload training run to GCS...")
     run_id = asyncio.run(
         upload_artifact_bundle(

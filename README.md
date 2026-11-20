@@ -1,6 +1,6 @@
 # Training Ground
 
-Train YOLO26 or RF-DETR models for object detection and instance segmentation using Roboflow datasets. The wizard trains a model, exports ONNX, evaluates the selected checkpoint, and uploads the run artifacts to GCS.
+Train YOLO26 or RF-DETR models for object detection and instance segmentation using local COCO or Roboflow datasets. The wizard trains a model, exports ONNX, evaluates the selected checkpoint, and uploads the run artifacts to GCS.
 
 ## Install on an Ubuntu GPU VM
 
@@ -28,7 +28,7 @@ The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and eva
 
 ## Train on native-resolution tiles
 
-For CityWizard or other high-resolution COCO datasets, select **Boxes → YOLO26 → Native-resolution tiles** in the wizard. To train from the local export and save the run locally:
+For CityWizard or other high-resolution COCO datasets, select **Boxes → YOLO26 → Native-resolution tiles** in the wizard. To train from the local export, run:
 
 ```sh
 uv run training-ground wizard --dataset-path 'Waste Detection 5928.v34i.coco'

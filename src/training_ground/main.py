@@ -40,7 +40,7 @@ def wizard(
         typer.Option(
             exists=True,
             file_okay=False,
-            help="Use a local COCO dataset and keep the run local.",
+            help="Use a local COCO dataset instead of downloading from Roboflow.",
         ),
     ] = None,
 ):
