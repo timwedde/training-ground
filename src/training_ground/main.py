@@ -8,6 +8,7 @@ from .analysis import analyze_dataset
 from .directory_prediction import run_prediction_directory
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
+from .settings_sweep import SETTINGS_REPORT
 from .training_backends import (
     RFDETR_BACKEND,
     SEGMENTATION_TASK,
@@ -96,6 +97,10 @@ def evaluate(
     task: Annotated[
         str, typer.Option(help="Annotation type: boxes or segmentation.")
     ] = SEGMENTATION_TASK,
+    settings_sweep: Annotated[
+        bool,
+        typer.Option(help="Tune confidence and supported NMS settings on validation."),
+    ] = True,
 ):
     """
     Evaluate a model checkpoint on a dataset split.
@@ -109,6 +114,7 @@ def evaluate(
         backend=normalize_backend(backend),
         model_size=model_size,
         task=normalize_task(task),
+        settings_sweep=settings_sweep,
     )
 
     typer.echo(f"Evaluation complete. Artifacts written to {output_dir}")
@@ -118,6 +124,7 @@ def evaluate(
     typer.echo("  - prediction_metrics.csv")
     typer.echo("  - per_class_metrics.csv")
     typer.echo("  - summary.json")
+    typer.echo(f"  - {SETTINGS_REPORT}")
 
 
 @app.command("predict-dir")

@@ -20,6 +20,8 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 class Predictor(Protocol):
     class_id_to_name: dict[int, str]
 
+    def model_settings(self) -> dict: ...
+
     def predict(self, image_path: str, threshold: float | None): ...
 
 
@@ -29,6 +31,7 @@ class YOLO26PredictorAdapter:
 
         typer.echo(f"Loading YOLO26 model from checkpoint: {checkpoint_path}")
         self._model = YOLO(str(checkpoint_path))
+        self.checkpoint_name = checkpoint_path.name
         names = getattr(self._model, "names", None) or getattr(
             self._model.model, "names", {}
         )
@@ -39,13 +42,58 @@ class YOLO26PredictorAdapter:
         else:
             self.class_id_to_name = dict(enumerate(map(str, names)))
 
-    def predict(self, image_path: str, threshold: float | None):
+    def model_settings(self) -> dict:
+        from ultralytics.utils import DEFAULT_CFG, PREDICT_IOU
+
+        layers = getattr(self._model.model, "model", None)
+        head = layers[-1] if layers is not None else None
+        predictor = self._model.predictor
+        inference_model = predictor.model if predictor is not None else None
+        end_to_end = (
+            inference_model.end2end
+            if inference_model is not None
+            else head is not None and getattr(head, "cv2", None) is None
+        )
+        settings = {
+            "variant": (
+                self._model.model.yaml.get("yaml_file", self.checkpoint_name)
+                if head is not None
+                else self.checkpoint_name
+            ),
+            "image_size": [YOLO26_IMAGE_SIZE, YOLO26_IMAGE_SIZE],
+            "max_detections": (
+                int(predictor.args.max_det)
+                if predictor is not None
+                else DEFAULT_CFG.max_det
+            ),
+            "nms_iou": None if end_to_end else PREDICT_IOU,
+            "can_sweep_nms": head is not None and not end_to_end,
+        }
+        training_size = getattr(self._model.model, "args", {}).get("imgsz")
+        if isinstance(training_size, int):
+            settings["training_image_size"] = [training_size, training_size]
+        elif isinstance(training_size, (list, tuple)) and len(training_size) == 2:
+            settings["training_image_size"] = list(training_size)
+        if self._model.task == "segment" and getattr(head, "proto", None) is not None:
+            # Prototype resolution for the nominal square input. Returned masks
+            # are resized to the source image by the predictor.
+            upsample = head.proto.upsample.stride
+            feature_size = YOLO26_IMAGE_SIZE // int(head.stride[0])
+            settings["mask_prototype_size"] = [
+                feature_size * int(stride) for stride in upsample
+            ]
+        return settings
+
+    def predict(
+        self, image_path: str, threshold: float | None, *, iou: float | None = None
+    ):
         results = self._model.predict(
             source=image_path,
             conf=DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold,
             verbose=False,
             imgsz=YOLO26_IMAGE_SIZE,
             retina_masks=True,
+            iou=iou,
         )
         result = results[0]
         boxes = result.boxes
@@ -85,6 +133,9 @@ class RFDETRPredictorAdapter:
         from .camera_inference import matches_camera_model
 
         self.camera_profile = matches_camera_model(model)
+        self.model_config = model.model_config
+        self.variant = type(model).__name__
+        self.num_class_slots = int(model.model.model.class_embed.out_features)
         if self.camera_profile:
             typer.echo(
                 "Camera STM settings: input=432, masks=216, top-k=20, "
@@ -98,6 +149,20 @@ class RFDETRPredictorAdapter:
         else:
             context = self._predictor._prediction_context()
             self.class_id_to_name = context.class_id_to_name
+
+    def model_settings(self) -> dict:
+        config = self.model_config
+        ratio = config.mask_downsample_ratio if config.segmentation_head else None
+        return {
+            "variant": self.variant,
+            "image_size": [config.resolution, config.resolution],
+            "mask_size": [config.resolution // ratio] * 2 if ratio else None,
+            "mask_downsample_ratio": ratio,
+            "num_queries": config.num_queries,
+            "num_select": config.num_select,
+            "num_class_slots": self.num_class_slots,
+            "nms_iou": None,
+        }
 
     def predict(self, image_path: str, threshold: float | None):
         if self.camera_profile:

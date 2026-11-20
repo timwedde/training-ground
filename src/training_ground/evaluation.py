@@ -9,10 +9,16 @@ import numpy as np
 import typer
 from faster_coco_eval import COCO
 
-from .coco import decode_segmentation, encode_binary_mask, load_coco_annotations
+from .coco import encode_binary_mask, load_coco_annotations
 from .coco_eval import run_coco_eval
 from .evaluation_plots import write_evaluation_plots
-from .geometry import bbox_iou, mask_iou, xywh_to_xyxy, xyxy_to_xywh
+from .geometry import xyxy_to_xywh
+from .matching import (
+    build_ground_truth,
+    build_label_to_category_id,
+    image_relative_path,
+    match_predictions,
+)
 from .overlays import render_fn_overlay, render_fp_overlay, render_overlay
 from .predictors import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -20,9 +26,10 @@ from .predictors import (
     build_pred_items,
     create_model,
 )
+from .settings_sweep import CONFIDENCE_FLOOR, SETTINGS_REPORT, write_settings_report
 from .training_backends import RFDETR_BACKEND, SEGMENTATION_TASK, Backend, Task
 
-COCO_CONFIDENCE_FLOOR = 0.001
+COCO_CONFIDENCE_FLOOR = CONFIDENCE_FLOOR
 
 
 def resolve_dataset_split(dataset_path: Path, split: str) -> tuple[Path, Path]:
@@ -73,26 +80,6 @@ def write_csv(output_path: Path, rows: list[dict]):
         writer.writerows(rows)
 
 
-def build_label_to_category_id(
-    model: Predictor,
-    categories: list[dict],
-) -> dict[int, int]:
-    category_name_to_id = {}
-    for category in categories:
-        name = category["name"]
-        if name in category_name_to_id:
-            raise ValueError(f"COCO class name {name!r} is ambiguous.")
-        category_name_to_id[name] = category["id"]
-    model_names = model.class_id_to_name
-    if len(set(model_names.values())) != len(model_names):
-        raise ValueError("Model class names are ambiguous.")
-    return {
-        class_id: category_name_to_id[name]
-        for class_id, name in model_names.items()
-        if name in category_name_to_id
-    }
-
-
 def run_evaluation(
     dataset_path: Path,
     checkpoint_path: Path,
@@ -104,6 +91,7 @@ def run_evaluation(
     output_dir: Path | None = None,
     model_size: str | None = None,
     task: Task = SEGMENTATION_TASK,
+    settings_sweep: bool = True,
 ) -> Path:
     split_dir, annotation_path = resolve_dataset_split(dataset_path, split)
     images_by_id, annotations_by_image, categories = load_coco_annotations(
@@ -181,9 +169,7 @@ def run_evaluation(
     with typer.progressbar(image_records, label="Running inference") as progress:
         for image_record in progress:
             image_id = image_record["id"]
-            relative_path = Path(image_record["file_name"])
-            if relative_path.is_absolute() or ".." in relative_path.parts:
-                raise ValueError(f"Invalid COCO image path: {relative_path}")
+            relative_path = image_relative_path(image_record)
             image_path = split_dir / relative_path
             gt_annotations = annotations_by_image.get(image_id, [])
             # Lower the inference cutoff once, then apply the two report thresholds
@@ -228,62 +214,19 @@ def run_evaluation(
                         }
                     )
 
-            gt_items = []
-            image_height = int(image_record["height"])
-            image_width = int(image_record["width"])
-            for annotation in gt_annotations:
-                gt_items.append(
-                    {
-                        "category_id": annotation["category_id"],
-                        "class_name": category_names[annotation["category_id"]],
-                        "bbox": xywh_to_xyxy(annotation["bbox"]),
-                        "mask": (
-                            decode_segmentation(
-                                annotation.get("segmentation"),
-                                image_height,
-                                image_width,
-                            )
-                            if task == SEGMENTATION_TASK
-                            else None
-                        ),
-                    }
-                )
-
-            gt_matched: set[int] = set()
-            image_matched_ious: list[float] = []
-            true_positives = 0
-            false_positives = 0
-
+            gt_items = build_ground_truth(
+                image_record, gt_annotations, category_names, task
+            )
+            matches, gt_matched = match_predictions(
+                pred_items, gt_items, task, iou_threshold
+            )
+            image_matched_ious = []
+            true_positives = false_positives = 0
             fp_items_per_class = defaultdict(list)
 
-            for pred_item in sorted(
-                pred_items, key=lambda item: item["score"], reverse=True
-            ):
-                best_match_index = None
-                best_iou = 0.0
-                for gt_index, gt_item in enumerate(gt_items):
-                    if (
-                        gt_index in gt_matched
-                        or gt_item["category_id"] != pred_item["category_id"]
-                    ):
-                        continue
-
-                    if (
-                        task == SEGMENTATION_TASK
-                        and pred_item["mask"] is not None
-                        and gt_item["mask"] is not None
-                    ):
-                        overlap = mask_iou(pred_item["mask"], gt_item["mask"])
-                    else:
-                        overlap = bbox_iou(pred_item["bbox"], gt_item["bbox"])
-
-                    if overlap > best_iou:
-                        best_iou = overlap
-                        best_match_index = gt_index
-
+            for pred_item, best_match_index, best_iou in matches:
                 counts = per_class_counts[pred_item["category_id"]]
-                if best_match_index is not None and best_iou >= iou_threshold:
-                    gt_matched.add(best_match_index)
+                if best_match_index is not None:
                     true_positives += 1
                     image_matched_ious.append(best_iou)
                     counts["tp"] += 1
@@ -419,6 +362,7 @@ def run_evaluation(
         "iou_threshold": iou_threshold,
         "per_class": per_class_rows,
         "coco_metrics": coco_metrics,
+        "settings_report": SETTINGS_REPORT,
         "overall": {
             "precision": safe_divide(total_tp, total_tp + total_fp),
             "recall": safe_divide(total_tp, total_tp + total_fn),
@@ -439,6 +383,9 @@ def run_evaluation(
         prediction_rows=prediction_rows,
         coco_metrics=coco_metrics,
         coco_confidence_floor=COCO_CONFIDENCE_FLOOR,
+    )
+    write_settings_report(
+        output_dir, dataset_path, model, task, iou_threshold, settings_sweep
     )
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 

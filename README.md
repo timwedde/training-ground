@@ -38,5 +38,6 @@ uv run training-ground upload runs/RUN
 Replace `DATASET` and `RUN` with your dataset and run directory names. Use `uv run training-ground COMMAND --help` for command options.
 
 - **Evaluation** writes overlays, plots, and metrics. COCO AP uses a confidence floor of `0.001`. Precision, recall, F1, and overlays use `--threshold` or the model’s operating defaults.
+- **Recommended settings** are saved in `recommended_settings.json` with the evaluation. The report lists the checkpoint’s model settings and recommends confidence cutoffs and, where supported, YOLO NMS IoU using F1 on the validation split. Use `evaluate --no-settings-sweep` to skip the extra inference passes.
 - **Directory prediction** saves images by detected class, preserving source subfolders. Add `--upload` to send images and predictions to Roboflow for review.
 - **RF-DETR** offers model defaults or a fixed cap of 50 queries and 20 outputs per image, plus a choice of mask resolution for segmentation. Compatible STM checkpoints automatically use the camera’s preprocessing and per-class thresholds. Set `checkpoint_path` in `tag-bad-images.ipynb` to tag examples from an STM evaluation.

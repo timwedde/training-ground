@@ -55,6 +55,41 @@ def annotation(category_id):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_settings_sweep_uses_validation_and_reports_class_thresholds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            categories = [(9, "tree"), (20, "pole")]
+            val_path = write_split(root, "valid", categories, [annotation(9)])
+            test_path = write_split(root, "test", categories, [annotation(9)])
+            boxes = np.array([[2, 3, 14, 16], [18, 18, 28, 28], [20, 3, 28, 9]])
+            validation = DetectionBatch(
+                boxes, np.array([0.4, 0.2, 0.25]), np.array([3, 3, 1]), None
+            )
+            test = DetectionBatch(boxes[:1], np.array([0.95]), np.array([3]), None)
+            model = SimpleNamespace(
+                class_id_to_name={3: "tree", 1: "pole"},
+                model_settings=lambda: {"num_queries": 50, "image_size": [384, 384]},
+                predict=Mock(side_effect=[test, validation]),
+            )
+            output = run_evaluation(
+                root, root / "model.pth", "test", None, 0.5, model=model, task=BOX_TASK
+            )
+            self.assertEqual(
+                [call.args[0] for call in model.predict.call_args_list],
+                [str(test_path), str(val_path)],
+            )
+            report = json.loads((output / "recommended_settings.json").read_text())
+            self.assertEqual(
+                report["model"]["classes"],
+                [{"class_id": 1, "name": "pole"}, {"class_id": 3, "name": "tree"}],
+            )
+            sweep = report["sweep"]
+            self.assertEqual(sweep["split"], "valid")
+            self.assertEqual(sweep["recommended"]["confidence"], 0.39)
+            self.assertEqual(sweep["recommended"]["f1"], 1.0)
+            self.assertIsNone(sweep["per_class"][0]["best"])
+            self.assertEqual(sweep["per_class"][1]["best"]["confidence"], 0.39)
+
     def test_rfdetr_evaluation_uses_model_slots_and_keeps_reports_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -65,6 +100,7 @@ class WorkflowTests(unittest.TestCase):
             empty = DetectionBatch(boxes[:0], np.array([]), np.array([]), None)
             model = SimpleNamespace(
                 class_id_to_name={5: "pole"},
+                model_settings=dict,
                 predict=Mock(side_effect=[detection, empty]),
             )
 
@@ -119,7 +155,9 @@ class WorkflowTests(unittest.TestCase):
                 np.array([3, 3, 3]),
                 masks,
             )
-            model = SimpleNamespace(class_id_to_name={3: "tree"}, predict=Mock())
+            model = SimpleNamespace(
+                class_id_to_name={3: "tree"}, model_settings=dict, predict=Mock()
+            )
             for camera_profile, threshold, expected_tp, inference_floor in (
                 (False, None, 1, 0.001),
                 (False, 0.0, 3, 0.0),
