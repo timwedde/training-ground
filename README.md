@@ -5,7 +5,7 @@
 - `YOLO26`
 - `RF-DETR`
 
-The wizard keeps the same high-level flow for both backends: choose a Roboflow project/version, choose **Boxes** or **Segmentation**, choose the training backend and size, choose GPU sizing, train, export ONNX, plot metrics, evaluate, and upload artifacts.
+The wizard lets you choose a Roboflow dataset version, annotation type, training backend, and model size. It then trains the model, exports ONNX, plots metrics, runs evaluation, and uploads the artifacts.
 
 For RF-DETR, the wizard offers the selected model’s default query and output limits or a fixed limit of 50 queries and 20 outputs per image. For segmentation, the default mask downsample ratio `4` produces masks at one quarter of the input resolution per axis. Ratio `2` doubles the linear mask resolution and uses roughly four times as many mask-head pixels. Ratio `1` produces full-resolution masks and uses roughly sixteen times as many mask-head pixels as ratio `4`.
 
@@ -35,6 +35,8 @@ training-ground wizard
 ```
 
 Each training run gets a new directory under `runs/`. The wizard prints the checkpoint, ONNX model, and evaluation report paths before upload. Standalone evaluations also create a fresh report for each invocation.
+
+Both backends size training batches automatically on CUDA and use their default batch sizes on CPU or Apple Silicon. To set a fixed batch size, run `training-ground wizard --batch-size 8`.
 
 Evaluation reports use a confidence floor of `0.001` for COCO AP. Precision, recall, F1, and overlays use `--threshold` or the model’s operating defaults. STM evaluation uses the camera geometry and 20-output cap in both sets of metrics.
 

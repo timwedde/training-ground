@@ -44,13 +44,6 @@ DEFAULT_BACKEND = RFDETR_BACKEND
 DEFAULT_RFDETR_MODEL_SIZE = "medium"
 YOLO26_IMAGE_SIZE = 640
 BACK_CHOICE = "__back__"
-RFDETR_GPU_CHOICES = [
-    Choice(title="RTX  4080 (16GB)", value=(16, 1)),
-    Choice(title="RTX  4090 (24GB)", value=(32, 1)),
-    Choice(title="RTX  5090 (32GB)", value=(48, 1)),
-    Choice(title="RTX A6000 (48GB)", value=(64, 1)),
-    Choice(title="RTX  A100 (80GB)", value=(94, 1)),
-]
 RFDETR_MASK_DOWNSAMPLE_RATIO_CHOICES = [
     Choice(
         title="4 (default, quarter-resolution masks)",
@@ -64,13 +57,6 @@ RFDETR_MASK_DOWNSAMPLE_RATIO_CHOICES = [
         title="1 (full-resolution masks; ~16x mask-head pixels)",
         value=1,
     ),
-]
-YOLO26_GPU_CHOICES = [
-    Choice(title="RTX  4080 (16GB)", value=(16, 1)),
-    Choice(title="RTX  4090 (24GB)", value=(32, 1)),
-    Choice(title="RTX  5090 (32GB)", value=(48, 1)),
-    Choice(title="RTX A6000 (48GB)", value=(64, 1)),
-    Choice(title="RTX  A100 (80GB)", value=(94, 1)),
 ]
 
 
@@ -216,12 +202,12 @@ def create_run_directory(name: str) -> Path:
 
 def train_rfdetr(
     dataset_path: Path,
-    batch_size: int,
-    grad_accum_steps: int,
     task: Task,
     model_size: str = "nano",
     mask_downsample_ratio: int = 4,
     limit_queries: bool = False,
+    *,
+    batch_size: int | None = None,
 ) -> TrainingArtifacts:
     import rfdetr.detr as rfdetr_detr
     import torch.multiprocessing as mp
@@ -261,16 +247,19 @@ def train_rfdetr(
             f"linear_resolution=1/{mask_downsample_ratio} of training input"
         )
     train_kwargs = {}
+    if batch_size is not None:
+        train_kwargs["batch_size"] = batch_size
+    elif model.model.device.type == "cuda":
+        train_kwargs["batch_size"] = "auto"
     if model_size == "nano" and task == SEGMENTATION_TASK:
         train_kwargs["resolution"] = RFDETR_SEG_NANO_RESOLUTION
 
     model.train(
         dataset_dir=str(dataset_path),
         epochs=100,
-        batch_size=batch_size,
-        grad_accum_steps=grad_accum_steps,
         early_stopping=True,
-        early_stopping_patience=3,
+        early_stopping_patience=5,
+        early_stopping_use_ema=True,
         progress_bar="tqdm",
         compute_val_loss=True,
         tensorboard=False,
@@ -340,9 +329,10 @@ def train_rfdetr(
 
 def train_yolo26(
     dataset_path: Path,
-    batch_size: int,
     task: Task,
     model_size: str,
+    *,
+    batch_size: int | None = None,
 ) -> TrainingArtifacts:
     from ultralytics import YOLO
 
@@ -353,7 +343,7 @@ def train_yolo26(
     model.train(
         data=str(data_yaml_path),
         epochs=200,
-        batch=batch_size,
+        batch=-1 if batch_size is None else batch_size,
         imgsz=YOLO26_IMAGE_SIZE,
         patience=10,
         workers=8,
@@ -426,7 +416,7 @@ def train_yolo26(
     )
 
 
-def run_wizard():
+def run_wizard(batch_size: int | None = None):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     import roboflow
@@ -456,8 +446,6 @@ def run_wizard():
     model_size = None
     mask_downsample_ratio = 4
     limit_queries = False
-    batch_size = None
-    grad_accum_steps = 1
 
     step = "project"
     while True:
@@ -572,9 +560,8 @@ def run_wizard():
                 continue
             model_size = selected
             if backend == YOLO26_BACKEND:
-                step = "gpu"
-            else:
-                step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
+                break
+            step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
             continue
 
         if step == "mask_ratio":
@@ -607,43 +594,12 @@ def run_wizard():
                 step = "mask_ratio" if task == SEGMENTATION_TASK else "model_size"
                 continue
             limit_queries = selected is True
-            step = "gpu"
-            continue
-
-        if step == "gpu":
-            gpu_choices = (
-                YOLO26_GPU_CHOICES if backend == YOLO26_BACKEND else RFDETR_GPU_CHOICES
-            )
-            batch_size_selection = questionary.select(
-                "Select GPU VRAM",
-                choices=gpu_choices
-                + [
-                    Choice(title="Custom", value="custom"),
-                    Choice(title="Back", value=BACK_CHOICE),
-                ],
-                instruction="(Select Back to return)",
-            ).ask()
-            if batch_size_selection == BACK_CHOICE:
-                step = "queries" if backend == RFDETR_BACKEND else "model_size"
-                continue
-
-            if batch_size_selection == "custom":
-                custom_value = questionary.text(
-                    "Enter custom batch size",
-                    validate=lambda value: value.isdigit() and int(value) > 0,
-                    instruction="(Ctrl+C to abort, Enter to continue)",
-                ).ask()
-                batch_size = int(custom_value)
-                grad_accum_steps = 1
-            else:
-                batch_size, grad_accum_steps = batch_size_selection
             break
 
     assert project is not None
     assert version is not None
     assert backend is not None
     assert model_size is not None
-    assert batch_size is not None
 
     dataset_path = Path("datasets") / version.id
     version.download(model_format="coco", location=str(dataset_path))
@@ -653,7 +609,6 @@ def run_wizard():
         artifacts = train_rfdetr(
             dataset_path=dataset_path,
             batch_size=batch_size,
-            grad_accum_steps=grad_accum_steps,
             task=task,
             model_size=model_size,
             mask_downsample_ratio=mask_downsample_ratio,

@@ -27,11 +27,15 @@ app = typer.Typer()
 
 
 @app.command()
-def wizard():
+def wizard(
+    batch_size: int | None = typer.Option(
+        None, "--batch-size", min=1, help="Override automatic training batch sizing."
+    ),
+):
     """
     Complete a full training run.
     """
-    run_wizard()
+    run_wizard(batch_size=batch_size)
 
 
 @app.command()
