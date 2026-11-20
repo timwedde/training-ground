@@ -221,6 +221,7 @@ def train_rfdetr(
     task: Task,
     model_size: str = "nano",
     mask_downsample_ratio: int = 4,
+    limit_queries: bool = False,
 ) -> TrainingArtifacts:
     import rfdetr.detr as rfdetr_detr
     import torch.multiprocessing as mp
@@ -229,7 +230,7 @@ def train_rfdetr(
     mp.set_sharing_strategy("file_system")
     runs_dir = create_run_directory(f"rfdetr-{task}-{model_size}")
     model_name, constructor_name = rfdetr_models_for_task(task)[model_size]
-    model_kwargs = {"num_queries": 50, "num_select": 20}
+    model_kwargs = {"num_queries": 50, "num_select": 20} if limit_queries else {}
     if task == SEGMENTATION_TASK:
         model_kwargs["mask_downsample_ratio"] = mask_downsample_ratio
     model = getattr(rfdetr_detr, constructor_name)(**model_kwargs)
@@ -454,6 +455,7 @@ def run_wizard():
     backend = None
     model_size = None
     mask_downsample_ratio = 4
+    limit_queries = False
     batch_size = None
     grad_accum_steps = 1
 
@@ -569,11 +571,10 @@ def run_wizard():
                 step = "backend"
                 continue
             model_size = selected
-            step = (
-                "mask_ratio"
-                if backend == RFDETR_BACKEND and task == SEGMENTATION_TASK
-                else "gpu"
-            )
+            if backend == YOLO26_BACKEND:
+                step = "gpu"
+            else:
+                step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
             continue
 
         if step == "mask_ratio":
@@ -588,6 +589,24 @@ def run_wizard():
                 step = "model_size"
                 continue
             mask_downsample_ratio = int(selected)
+            step = "queries"
+            continue
+
+        if step == "queries":
+            selected = questionary.select(
+                "Select RF-DETR query and output limits",
+                choices=[
+                    Choice(title="Model defaults", value=False),
+                    Choice(title="50 queries / 20 outputs per image", value=True),
+                    Choice(title="Back", value=BACK_CHOICE),
+                ],
+                default=limit_queries,
+                instruction="(Select Back to return)",
+            ).ask()
+            if selected == BACK_CHOICE:
+                step = "mask_ratio" if task == SEGMENTATION_TASK else "model_size"
+                continue
+            limit_queries = selected is True
             step = "gpu"
             continue
 
@@ -605,11 +624,7 @@ def run_wizard():
                 instruction="(Select Back to return)",
             ).ask()
             if batch_size_selection == BACK_CHOICE:
-                step = (
-                    "mask_ratio"
-                    if backend == RFDETR_BACKEND and task == SEGMENTATION_TASK
-                    else "model_size"
-                )
+                step = "queries" if backend == RFDETR_BACKEND else "model_size"
                 continue
 
             if batch_size_selection == "custom":
@@ -642,6 +657,7 @@ def run_wizard():
             task=task,
             model_size=model_size,
             mask_downsample_ratio=mask_downsample_ratio,
+            limit_queries=limit_queries,
         )
     else:
         artifacts = train_yolo26(
