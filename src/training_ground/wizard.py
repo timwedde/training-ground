@@ -16,6 +16,7 @@ from .training_backends import (
     RFDETR_SIZE_LABELS,
     SEGMENTATION_TASK,
     YOLO26_BACKEND,
+    YOLO26_IMAGE_SIZE,
     YOLO26_SIZE_LABELS,
     rfdetr_models_for_task,
 )
@@ -57,7 +58,12 @@ def _select(message, choices, default, *, back=True, instruction=None):
     return selected
 
 
-def run_wizard(batch_size: int | None = None, dataset_path: Path | None = None):
+def run_wizard(
+    batch_size: int | None = None,
+    dataset_path: Path | None = None,
+    *,
+    image_size: int | None = None,
+):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     local_dataset = dataset_path is not None
@@ -199,11 +205,43 @@ def run_wizard(batch_size: int | None = None, dataset_path: Path | None = None):
             model_size = selected
             if backend == YOLO26_BACKEND:
                 if task == SEGMENTATION_TASK:
-                    break
+                    if image_size is not None:
+                        break
+                    step = "image_size"
+                    continue
                 step = "tiling"
                 continue
             step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
             continue
+
+        if step == "image_size":
+            selected = _select(
+                "Select YOLO26 segmentation input size",
+                choices=[
+                    Choice(
+                        title=f"{YOLO26_IMAGE_SIZE} px (default)",
+                        value=YOLO26_IMAGE_SIZE,
+                    ),
+                    Choice(title="448 px (for 432 × 432 images)", value=448),
+                    Choice(title="Custom size", value="custom"),
+                ],
+                default=YOLO26_IMAGE_SIZE,
+            )
+            if selected == BACK_CHOICE:
+                step = "model_size"
+                continue
+            if selected == "custom":
+                selected = questionary.text(
+                    "Square input size in pixels (rounded up to a multiple of 32)",
+                    validate=lambda value: (
+                        (value.isdecimal() and int(value) > 0)
+                        or "Enter a positive whole number."
+                    ),
+                ).ask()
+                if selected is None:
+                    raise typer.Abort()
+            image_size = int(selected)
+            break
 
         if step == "tiling":
             selected = _select(
@@ -255,6 +293,11 @@ def run_wizard(batch_size: int | None = None, dataset_path: Path | None = None):
     assert backend is not None
     assert model_size is not None
 
+    if image_size is not None and (
+        backend != YOLO26_BACKEND or task != SEGMENTATION_TASK
+    ):
+        raise typer.BadParameter("--image-size applies only to YOLO26 segmentation.")
+
     if dataset_path is None:
         assert project is not None and version is not None
         dataset_path = Path("datasets") / version.id
@@ -280,6 +323,7 @@ def run_wizard(batch_size: int | None = None, dataset_path: Path | None = None):
             task=task,
             model_size=model_size,
             tiled=tiled,
+            image_size=image_size,
         )
 
     metadata = build_training_metadata(dataset_name, artifacts)

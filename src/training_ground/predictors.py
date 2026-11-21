@@ -56,6 +56,14 @@ class YOLO26PredictorAdapter:
         else:
             self.class_id_to_name = dict(enumerate(map(str, names)))
 
+    @property
+    def image_size(self) -> int:
+        if self._model.task == "segment":
+            size = self._model.overrides.get("imgsz")
+            if isinstance(size, int):
+                return size
+        return YOLO26_IMAGE_SIZE
+
     def model_settings(self) -> dict:
         from ultralytics.utils import DEFAULT_CFG, PREDICT_IOU
 
@@ -74,7 +82,7 @@ class YOLO26PredictorAdapter:
                 if head is not None
                 else self.checkpoint_name
             ),
-            "image_size": [YOLO26_IMAGE_SIZE, YOLO26_IMAGE_SIZE],
+            "image_size": [self.image_size, self.image_size],
             "max_detections": (
                 int(predictor.args.max_det)
                 if predictor is not None
@@ -92,7 +100,7 @@ class YOLO26PredictorAdapter:
             # Prototype resolution for the nominal square input. Returned masks
             # are resized to the source image by the predictor.
             upsample = head.proto.upsample.stride
-            feature_size = YOLO26_IMAGE_SIZE // int(head.stride[0])
+            feature_size = self.image_size // int(head.stride[0])
             settings["mask_prototype_size"] = [
                 feature_size * int(stride) for stride in upsample
             ]
@@ -127,7 +135,7 @@ class YOLO26PredictorAdapter:
             source=image_path,
             conf=confidence_cutoff,
             verbose=False,
-            imgsz=YOLO26_IMAGE_SIZE,
+            imgsz=self.image_size,
             retina_masks=True,
             iou=iou,
         )

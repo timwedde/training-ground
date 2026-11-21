@@ -35,6 +35,12 @@ def wizard(
         int | None,
         typer.Option(min=1, help="Override automatic training batch sizing."),
     ] = None,
+    image_size: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Square input size for YOLO26 segmentation (default: 640)."
+        ),
+    ] = None,
     dataset_path: Annotated[
         Path | None,
         typer.Option(
@@ -47,7 +53,7 @@ def wizard(
     """
     Complete a full training run.
     """
-    run_wizard(batch_size=batch_size, dataset_path=dataset_path)
+    run_wizard(batch_size=batch_size, dataset_path=dataset_path, image_size=image_size)
 
 
 @app.command()

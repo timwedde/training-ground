@@ -306,11 +306,16 @@ def train_yolo26(
     *,
     batch_size: int | None = None,
     tiled: bool = False,
+    image_size: int | None = None,
 ) -> TrainingArtifacts:
     from ultralytics import YOLO
 
     if tiled and task != BOX_TASK:
         raise typer.BadParameter("Tiling is available only for YOLO26 box detection.")
+    if image_size is not None and (image_size < 1 or task != SEGMENTATION_TASK):
+        raise typer.BadParameter(
+            "Image size must be positive and applies only to YOLO26 segmentation."
+        )
     run_name = yolo26_run_name(task, model_size)
     runs_dir = create_run_directory(f"{run_name}-tiled" if tiled else run_name)
     data_yaml_path = prepare_yolo26_dataset(
@@ -343,7 +348,7 @@ def train_yolo26(
         data=str(data_yaml_path),
         epochs=200,
         batch=0.95 if batch_size is None else batch_size,
-        imgsz=YOLO26_IMAGE_SIZE,
+        imgsz=YOLO26_IMAGE_SIZE if image_size is None else image_size,
         patience=10,
         workers=workers,
         project=str(runs_dir.parent),
@@ -382,7 +387,7 @@ def train_yolo26(
     exported_path = Path(
         export_model.export(
             format="onnx",
-            imgsz=YOLO26_IMAGE_SIZE,
+            imgsz=trainer.args.imgsz,
             simplify=True,
             nms=False if tiled else None,
         )

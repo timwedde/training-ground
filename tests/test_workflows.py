@@ -244,7 +244,9 @@ class WorkflowTests(unittest.TestCase):
                 [0, 0.03125, 0.03125, 0.03125, 0.125, 0.125, 0.125, 0.125, 0.03125],
             )
 
-    def test_yolo_adapter_requests_original_resolution_masks(self):
+    def test_yolo_adapter_uses_checkpoint_input_size_and_original_resolution_masks(
+        self,
+    ):
         adapter = YOLO26PredictorAdapter.__new__(YOLO26PredictorAdapter)
         adapter.tiled = False
         mask = torch.zeros((1, 32, 64), dtype=torch.uint8)
@@ -257,8 +259,13 @@ class WorkflowTests(unittest.TestCase):
             ),
             masks=SimpleNamespace(data=mask),
         )
-        adapter._model = SimpleNamespace(predict=Mock(return_value=[result]))
+        adapter._model = SimpleNamespace(
+            task="segment",
+            overrides={"imgsz": 448},
+            predict=Mock(return_value=[result]),
+        )
         predictions = adapter.predict("frame.jpg", None)
+        self.assertEqual(adapter._model.predict.call_args.kwargs["imgsz"], 448)
         self.assertTrue(adapter._model.predict.call_args.kwargs["retina_masks"])
         np.testing.assert_array_equal(predictions.mask, mask.numpy().astype(bool))
 
