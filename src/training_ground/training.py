@@ -328,6 +328,7 @@ def train_yolo26(
     )
     selected_model_name = yolo26_models_for_task(task)[model_size]
     model = YOLO(selected_model_name)
+    training_options = {"mask_ratio": 2} if task == SEGMENTATION_TASK else {}
     workers = 8
     if tiled:
         available_cpus = os.process_cpu_count() or 1
@@ -336,8 +337,7 @@ def train_yolo26(
         typer.echo(
             f"YOLO26 tiled training requests {workers} loader workers ({available_cpus} available CPUs)."
         )
-    tile_options = (
-        {
+        training_options = {
             "tile": True,
             "nms": False,
             "mosaic": 0.0,
@@ -346,9 +346,6 @@ def train_yolo26(
             "translate": 0.0,
             "multi_scale": 0.0,
         }
-        if tiled
-        else {}
-    )
     model.train(
         data=str(data_yaml_path),
         epochs=200,
@@ -361,7 +358,7 @@ def train_yolo26(
         name=runs_dir.name,
         # The directory was reserved for this invocation before conversion.
         exist_ok=True,
-        **tile_options,
+        **training_options,
     )
 
     trainer = getattr(model, "trainer", None)
