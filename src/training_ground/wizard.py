@@ -63,6 +63,7 @@ def run_wizard(
     dataset_path: Path | None = None,
     *,
     image_size: int | None = None,
+    rect: bool = False,
 ):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -98,6 +99,7 @@ def run_wizard(
     mask_downsample_ratio = 4
     limit_queries = False
     tiled = False
+    rectangular_batches = rect
 
     step = "task" if local_dataset else "project"
     while True:
@@ -205,34 +207,52 @@ def run_wizard(
             model_size = selected
             if backend == YOLO26_BACKEND:
                 if task == SEGMENTATION_TASK:
-                    if image_size is not None:
-                        break
-                    step = "image_size"
-                    continue
-                step = "tiling"
+                    step = "image_size" if rect else "batch_shape"
+                else:
+                    step = "tiling"
                 continue
             step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
             continue
 
-        if step == "image_size":
+        if step == "batch_shape":
             selected = _select(
-                "Select YOLO26 segmentation input size",
+                "Select YOLO26 segmentation training batch shape",
                 choices=[
-                    Choice(
-                        title=f"{YOLO26_IMAGE_SIZE} px (default)",
-                        value=YOLO26_IMAGE_SIZE,
-                    ),
-                    Choice(title="448 px (for 432 × 432 images)", value=448),
-                    Choice(title="Custom size", value="custom"),
+                    Choice(title="Square (default)", value=False),
+                    Choice(title="Rectangular (less padding, no mosaic)", value=True),
                 ],
-                default=YOLO26_IMAGE_SIZE,
+                default=rectangular_batches,
             )
             if selected == BACK_CHOICE:
                 step = "model_size"
                 continue
+            rectangular_batches = selected is True
+            step = "image_size"
+            continue
+
+        if step == "image_size":
+            if image_size is not None:
+                break
+            choices = [
+                Choice(
+                    title=f"{YOLO26_IMAGE_SIZE} px (default)", value=YOLO26_IMAGE_SIZE
+                ),
+            ]
+            if not rectangular_batches:
+                choices.append(Choice(title="448 px (for 432 × 432 images)", value=448))
+            choices.append(Choice(title="Custom size", value="custom"))
+            selected = _select(
+                "Select YOLO26 segmentation "
+                + ("long side" if rectangular_batches else "input size"),
+                choices=choices,
+                default=YOLO26_IMAGE_SIZE,
+            )
+            if selected == BACK_CHOICE:
+                step = "model_size" if rect else "batch_shape"
+                continue
             if selected == "custom":
                 selected = questionary.text(
-                    "Square input size in pixels (rounded up to a multiple of 32)",
+                    "Size in pixels (rounded up to a multiple of 32)",
                     validate=lambda value: (
                         (value.isdecimal() and int(value) > 0)
                         or "Enter a positive whole number."
@@ -297,6 +317,8 @@ def run_wizard(
         backend != YOLO26_BACKEND or task != SEGMENTATION_TASK
     ):
         raise typer.BadParameter("--image-size applies only to YOLO26 segmentation.")
+    if rect and (backend != YOLO26_BACKEND or task != SEGMENTATION_TASK):
+        raise typer.BadParameter("--rect applies only to YOLO26 segmentation.")
 
     if dataset_path is None:
         assert project is not None and version is not None
@@ -324,6 +346,7 @@ def run_wizard(
             model_size=model_size,
             tiled=tiled,
             image_size=image_size,
+            rect=rectangular_batches,
         )
 
     metadata = build_training_metadata(dataset_name, artifacts)

@@ -307,11 +307,16 @@ def train_yolo26(
     batch_size: int | None = None,
     tiled: bool = False,
     image_size: int | None = None,
+    rect: bool = False,
 ) -> TrainingArtifacts:
     from ultralytics import YOLO
 
     if tiled and task != BOX_TASK:
         raise typer.BadParameter("Tiling is available only for YOLO26 box detection.")
+    if rect and task != SEGMENTATION_TASK:
+        raise typer.BadParameter(
+            "Rectangular batches are available only for YOLO26 segmentation."
+        )
     if image_size is not None and (image_size < 1 or task != SEGMENTATION_TASK):
         raise typer.BadParameter(
             "Image size must be positive and applies only to YOLO26 segmentation."
@@ -349,6 +354,7 @@ def train_yolo26(
         epochs=200,
         batch=0.95 if batch_size is None else batch_size,
         imgsz=YOLO26_IMAGE_SIZE if image_size is None else image_size,
+        rect=rect,
         patience=10,
         workers=workers,
         project=str(runs_dir.parent),

@@ -38,9 +38,13 @@ def wizard(
     image_size: Annotated[
         int | None,
         typer.Option(
-            min=1, help="Square input size for YOLO26 segmentation (default: 640)."
+            min=1, help="Input size or rectangular long side for YOLO26 segmentation."
         ),
     ] = None,
+    rect: Annotated[
+        bool,
+        typer.Option("--rect", help="Use rectangular YOLO26 segmentation batches."),
+    ] = False,
     dataset_path: Annotated[
         Path | None,
         typer.Option(
@@ -53,7 +57,12 @@ def wizard(
     """
     Complete a full training run.
     """
-    run_wizard(batch_size=batch_size, dataset_path=dataset_path, image_size=image_size)
+    run_wizard(
+        batch_size=batch_size,
+        dataset_path=dataset_path,
+        image_size=image_size,
+        rect=rect,
+    )
 
 
 @app.command()
