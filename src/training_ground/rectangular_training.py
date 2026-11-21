@@ -33,7 +33,7 @@ class RectangularSegmentationTrainer(SegmentationTrainer):
         prefix = colorstr("AutoBatch: ")
         LOGGER.info(
             f"{prefix}Profiling rectangular batches (height={height}, width={width}) "
-            f"with a {budget_gib:.2f} GiB budget."
+            f"with a {budget_gib:.2f} GiB budget ({fraction:.0%} of available VRAM)."
         )
         model = deepcopy(self.model).train()
         channels = model.yaml.get("channels", 3)

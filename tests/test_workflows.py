@@ -71,7 +71,7 @@ class WorkflowTests(unittest.TestCase):
         trainer = RectangularSegmentationTrainer.__new__(RectangularSegmentationTrainer)
         trainer.model = model
         trainer.device = torch.device("cuda:0")
-        trainer.batch_size = 0.95
+        trainer.batch_size = 0.85
         trainer.data = {"train": "train"}
         trainer.args = SimpleNamespace(amp=True, cache=True)
         trainer.amp = True
@@ -102,7 +102,7 @@ class WorkflowTests(unittest.TestCase):
                 "training_ground.rectangular_training.profile_ops", side_effect=profile
             ),
         ):
-            self.assertEqual(trainer.auto_batch(), 58)
+            self.assertEqual(trainer.auto_batch(), 52)
 
     def test_settings_sweep_uses_validation_and_reports_class_thresholds(self):
         with tempfile.TemporaryDirectory() as directory:

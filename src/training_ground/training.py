@@ -350,10 +350,12 @@ def train_yolo26(
             "translate": 0.0,
             "multi_scale": 0.0,
         }
+    # The rectangular probe does not run the full segmentation loss or validation.
+    auto_batch_fraction = 0.85 if rect else 0.95
     model.train(
         data=str(data_yaml_path),
         epochs=200,
-        batch=0.95 if batch_size is None else batch_size,
+        batch=auto_batch_fraction if batch_size is None else batch_size,
         imgsz=YOLO26_IMAGE_SIZE if image_size is None else image_size,
         rect=rect,
         patience=10,

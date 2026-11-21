@@ -24,7 +24,7 @@ uv sync --locked
 uv run training-ground wizard
 ```
 
-The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and evaluation paths before upload. On CUDA, YOLO26 auto-batching targets 95% of available VRAM. Use `wizard --batch-size 8` to set a fixed size.
+The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and evaluation paths before upload. On CUDA, YOLO26 auto-batching targets 95% of available VRAM for square training and 85% for rectangular training. Use `wizard --batch-size 8` to set a fixed size.
 
 For YOLO26 segmentation, select the input size in the wizard or set it with `wizard --image-size 432`. The default is 640 pixels. Ultralytics rounds 432 up to 448 to match the model stride. ONNX export and checkpoint inference use the effective size.
 
