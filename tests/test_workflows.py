@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import numpy as np
 import torch
@@ -63,6 +63,47 @@ def annotation(category_id):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_rectangular_autobatch_probes_dataset_shape_and_refines_after_oom(self):
+        from training_ground.rectangular_training import RectangularSegmentationTrainer
+
+        model = torch.nn.Linear(1, 1)
+        model.yaml = {"channels": 3}
+        trainer = RectangularSegmentationTrainer.__new__(RectangularSegmentationTrainer)
+        trainer.model = model
+        trainer.device = torch.device("cuda:0")
+        trainer.batch_size = 0.95
+        trainer.data = {"train": "train"}
+        trainer.args = SimpleNamespace(amp=True, cache=True)
+        trainer.amp = True
+        dataset = MagicMock()
+        dataset.__len__.return_value = 80
+        dataset.datasets = [
+            SimpleNamespace(
+                batch_shapes=[(448, 864), (480, 864)], labels=[{"cls": [0]}]
+            )
+        ]
+        trainer.build_dataset = Mock(return_value=dataset)
+
+        def profile(image, *_args, **_kwargs):
+            batch, channels, height, width = image
+            self.assertEqual((channels, height, width), (3, 480, 864))
+            if batch >= 64:
+                raise torch.OutOfMemoryError("simulated OOM")
+            return [(None, None, 1 + batch / 2)]
+
+        with (
+            torch.backends.cudnn.flags(benchmark=False),
+            patch("torch.cuda.mem_get_info", return_value=(32 * 2**30, 32 * 2**30)),
+            patch("torch.cuda.memory_reserved", return_value=0),
+            patch("torch.cuda.empty_cache"),
+            patch("training_ground.rectangular_training.autocast"),
+            patch("torch.empty", side_effect=lambda *shape: shape),
+            patch(
+                "training_ground.rectangular_training.profile_ops", side_effect=profile
+            ),
+        ):
+            self.assertEqual(trainer.auto_batch(), 58)
+
     def test_settings_sweep_uses_validation_and_reports_class_thresholds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

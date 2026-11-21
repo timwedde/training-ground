@@ -329,6 +329,10 @@ def train_yolo26(
     selected_model_name = yolo26_models_for_task(task)[model_size]
     model = YOLO(selected_model_name)
     training_options = {"mask_ratio": 2} if task == SEGMENTATION_TASK else {}
+    if rect and batch_size is None:
+        from .rectangular_training import RectangularSegmentationTrainer
+
+        training_options["trainer"] = RectangularSegmentationTrainer
     workers = 8
     if tiled:
         available_cpus = os.process_cpu_count() or 1

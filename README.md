@@ -28,7 +28,7 @@ The wizard saves each run under `runs/` and prints the checkpoint, ONNX, and eva
 
 For YOLO26 segmentation, select the input size in the wizard or set it with `wizard --image-size 432`. The default is 640 pixels. Ultralytics rounds 432 up to 448 to match the model stride. ONNX export and checkpoint inference use the effective size.
 
-For unpadded widescreen images, select **Rectangular** when prompted for the training batch shape, then enter the long side. You can also pass `wizard --rect --image-size 848`. Ultralytics sizes batches to the images' aspect ratio and disables mosaic augmentation. The wizard exports a square ONNX model at the stride-aligned long-side size.
+For unpadded widescreen images, select **Rectangular** when prompted for the training batch shape, then enter the long side. You can also pass `wizard --rect --image-size 848`. Ultralytics sizes batches to the images' aspect ratio and disables mosaic augmentation. On CUDA, automatic batch sizing profiles the dataset's rectangular dimensions. The wizard exports a square ONNX model at the stride-aligned long-side size.
 
 ## Train on native-resolution tiles
 
