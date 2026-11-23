@@ -21,7 +21,7 @@ from training_ground.overlays import render_prediction_overlay
 from training_ground.predictors import DetectionBatch, YOLO26PredictorAdapter
 from training_ground.training import prepare_yolo26_dataset
 from training_ground.training_backends import BOX_TASK, SEGMENTATION_TASK
-from training_ground.upload import upload_artifact_bundle
+from training_ground.upload import upload_artifact_bundle, write_upload_metadata
 
 
 def write_split(
@@ -623,6 +623,49 @@ class WorkflowTests(unittest.TestCase):
 
 
 class UploadTests(unittest.TestCase):
+    def test_retry_rfdetr_upload_with_only_an_ema_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("checkpoint_best_ema.pth", "inference_model.onnx", "metrics.csv"):
+                (root / name).touch()
+            (root / "checkpoint_best_ema_test_evaluation").mkdir()
+            regular = root / "checkpoint_best_regular.pth"
+            write_upload_metadata(
+                root,
+                "stick-detection",
+                {
+                    "backend": "rfdetr",
+                    "model_size": "medium",
+                    "secondary_checkpoint_path": regular.name,
+                    "input_shape": [360, 648],
+                },
+            )
+            with patch(
+                "training_ground.main.upload_artifact_bundle", AsyncMock(return_value=1)
+            ) as upload:
+                result = CliRunner().invoke(app, ["upload", str(root)])
+                self.assertEqual(result.exit_code, 0, result.output)
+                bundle = upload.await_args.kwargs
+                self.assertEqual(bundle["dataset_name"], "stick-detection")
+                self.assertEqual(
+                    set(bundle["artifact_files"]),
+                    {
+                        "checkpoint_best_ema.pth",
+                        "model.onnx",
+                        "metrics.csv",
+                        "evaluation_artifacts.zip",
+                    },
+                )
+                self.assertIsNone(bundle["metadata"]["secondary_checkpoint_path"])
+                self.assertEqual(bundle["metadata"]["input_shape"], [360, 648])
+
+                regular.touch()
+                result = CliRunner().invoke(app, ["upload", str(root)])
+                self.assertEqual(result.exit_code, 0, result.output)
+                bundle = upload.await_args.kwargs
+                self.assertEqual(bundle["artifact_files"][regular.name], regular)
+                self.assertEqual(bundle["metadata"]["secondary_checkpoint_path"], regular.name)
+
     def test_incomplete_signer_response_leaves_existing_archive_and_starts_no_uploads(
         self,
     ):

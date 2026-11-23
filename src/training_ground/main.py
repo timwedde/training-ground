@@ -291,7 +291,7 @@ def upload(
             {
                 key: value
                 for key, value in stored_metadata.items()
-                if metadata.get(key) is None and value is not None
+                if key not in metadata and value is not None
             }
         )
 

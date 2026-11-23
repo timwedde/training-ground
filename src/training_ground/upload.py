@@ -179,14 +179,15 @@ def resolve_dataset_name(runs_dir: Path, dataset_name: str | None = None) -> str
 
 def artifact_files_for_training(artifacts: TrainingArtifacts) -> dict[str, Path]:
     if artifacts.backend == RFDETR_BACKEND:
-        assert artifacts.secondary_checkpoint_path is not None
-        return {
+        files = {
             "checkpoint_best_ema.pth": artifacts.primary_checkpoint_path,
-            "checkpoint_best_regular.pth": artifacts.secondary_checkpoint_path,
             "metrics.csv": artifacts.metrics_path,
             "evaluation_artifacts.zip": artifacts.eval_dir,
             "model.onnx": artifacts.onnx_path,
         }
+        if artifacts.secondary_checkpoint_path is not None:
+            files["checkpoint_best_regular.pth"] = artifacts.secondary_checkpoint_path
+        return files
 
     return {
         "best.pt": artifacts.primary_checkpoint_path,
@@ -211,6 +212,7 @@ def resolve_training_artifacts(
     yolo26_models = yolo26_models_for_task(task)
 
     if normalized_backend == RFDETR_BACKEND:
+        checkpoint_regular = runs_dir / "checkpoint_best_regular.pth"
         preferred_onnx_path = (metadata or {}).get("onnx_path")
         if not isinstance(preferred_onnx_path, str):
             preferred_onnx_path = None
@@ -223,7 +225,9 @@ def resolve_training_artifacts(
             model_size=(metadata or {}).get("model_size"),
             runs_dir=runs_dir,
             primary_checkpoint_path=runs_dir / "checkpoint_best_ema.pth",
-            secondary_checkpoint_path=runs_dir / "checkpoint_best_regular.pth",
+            secondary_checkpoint_path=(
+                checkpoint_regular if checkpoint_regular.is_file() else None
+            ),
             metrics_path=runs_dir / "metrics.csv",
             eval_dir=Path(
                 runs_dir

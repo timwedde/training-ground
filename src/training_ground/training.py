@@ -332,7 +332,9 @@ def train_rfdetr(
         model_size=model_size,
         runs_dir=runs_dir,
         primary_checkpoint_path=checkpoint_ema,
-        secondary_checkpoint_path=checkpoint_regular,
+        secondary_checkpoint_path=(
+            checkpoint_regular if checkpoint_regular.is_file() else None
+        ),
         metrics_path=metrics_path,
         eval_dir=eval_dir,
         onnx_path=onnx_path,
