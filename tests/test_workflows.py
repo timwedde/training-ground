@@ -152,7 +152,7 @@ class WorkflowTests(unittest.TestCase):
                 rectangular_short_side=360,
             )
 
-    def test_rectangular_rfdetr_uses_native_autobatch_with_rectangular_masks(self):
+    def test_rectangular_rfdetr_uses_native_autobatch_with_a_vram_budget(self):
         from rfdetr.config import RFDETRSegNanoConfig, SegmentationTrainConfig
         from rfdetr.training import auto_batch
 
@@ -165,31 +165,36 @@ class WorkflowTests(unittest.TestCase):
             get_train_config=SegmentationTrainConfig,
         )
         original_factory = auto_batch._make_synthetic_batch
+        original_resolver = auto_batch.resolve_auto_batch_config
         shape = (360, 648)
+        candidates = []
 
-        def check_probe(**kwargs):
-            samples, targets = auto_batch._make_synthetic_batch(
-                micro_batch_size=2,
-                resolution=kwargs["resolution"],
-                device=torch.device("cpu"),
-                num_classes=kwargs["num_classes"],
-                segmentation_head=kwargs["segmentation_head"],
-                max_targets_per_image=kwargs["max_targets_per_image"],
-            )
-            self.assertEqual(samples.tensors.shape, (2, 3, *shape))
-            self.assertEqual(samples.mask.shape, (2, *shape))
-            self.assertEqual(targets[0]["masks"].shape, (3, *shape))
-            self.assertEqual(targets[0]["size"].tolist(), list(shape))
-            return 12
+        def check_probe(model, criterion, batch, resolution, device, num_classes, amp, **kwargs):
+            candidates.append(batch)
+            if batch == 2:
+                samples, targets = auto_batch._make_synthetic_batch(
+                    batch, resolution, torch.device("cpu"), num_classes,
+                    kwargs["segmentation_head"], kwargs["max_targets_per_image"],
+                )
+                self.assertEqual(samples.tensors.shape, (2, 3, *shape))
+                self.assertEqual(samples.mask.shape, (2, *shape))
+                self.assertEqual(targets[0]["masks"].shape, (3, *shape))
+                self.assertEqual(targets[0]["size"].tolist(), list(shape))
+            return batch < 16
 
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch("rfdetr.detr._move_model_context_to_device"),
             patch.object(torch.cuda, "is_available", return_value=True),
             patch.object(torch.cuda, "get_device_name", return_value="test GPU"),
+            patch.object(torch.cuda, "mem_get_info", return_value=(900, 1600)),
+            patch.object(torch.cuda, "memory_reserved", return_value=124),
+            patch.object(torch.cuda, "reset_peak_memory_stats"),
+            patch.object(torch.cuda, "max_memory_allocated", side_effect=lambda _: candidates[-1] * 60),
             patch.object(auto_batch, "_resolve_amp_dtype", return_value=None),
             patch.object(auto_batch, "build_criterion_from_config", return_value=(Mock(), None)),
-            patch.object(auto_batch, "probe_max_micro_batch", side_effect=check_probe) as probe,
+            patch.object(auto_batch, "_build_shadow_optimizer", return_value=(Mock(), [])),
+            patch.object(auto_batch, "_probe_step", side_effect=check_probe),
         ):
             instances = [dict(annotation(1), id=i, iscrowd=int(i == 4)) for i in range(1, 5)]
             write_split(Path(tmp), "train", [(1, "tree")], instances)
@@ -201,9 +206,11 @@ class WorkflowTests(unittest.TestCase):
                 multi_scale=False,
                 square_resize_div_64=False,
             )
-        probe.assert_called_once()
-        self.assertEqual((batch, accumulation), (8, 2))
+        self.assertIn(15, candidates)  # Fits physically, but exceeds the budget.
+        self.assertIn(16, candidates)  # Simulated CUDA OOM.
+        self.assertEqual((batch, accumulation), (14, 2))
         self.assertIs(auto_batch._make_synthetic_batch, original_factory)
+        self.assertIs(auto_batch.resolve_auto_batch_config, original_resolver)
 
     def test_rectangular_autobatch_probes_dataset_shape_and_refines_after_oom(self):
         from training_ground.rectangular_training import RectangularSegmentationTrainer

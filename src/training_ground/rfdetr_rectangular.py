@@ -6,6 +6,7 @@ from unittest.mock import patch
 from .coco import load_coco_annotations
 
 DEFAULT_SHORT_SIDE = 360
+VRAM_BUDGET_FRACTION = 0.85
 
 
 def rectangular_input(
@@ -77,6 +78,51 @@ def _rectangular_probe_batch(
     return samples, targets
 
 
+def _resolve_auto_batch_with_vram_budget(resolve, model_context, model_config, train_config, devices):
+    import torch
+    from rfdetr.training import auto_batch
+
+    device = model_context.device
+    model = model_context.model
+    free, _ = torch.cuda.mem_get_info(device)
+    available = free + torch.cuda.memory_reserved(device)
+    budget = int(available * VRAM_BUDGET_FRACTION)
+    gradient_bytes = sum(p.nbytes for p in model.parameters() if p.requires_grad)
+    # The probe's shadow optimizer already holds one copy of every trainable
+    # parameter. Count that copy toward EMA and reserve the rest separately.
+    ema_bytes = 0
+    if train_config.use_ema:
+        ema_bytes = sum(p.nbytes for p in model.parameters() if not p.requires_grad)
+        ema_bytes += sum(b.nbytes for b in model.buffers())
+    peaks = {}
+    probe_step = auto_batch._probe_step
+
+    def fits_budget(model, criterion, micro_batch_size, *args, **kwargs):
+        torch.cuda.reset_peak_memory_stats(device)
+        if not probe_step(model, criterion, micro_batch_size, *args, **kwargs):
+            return False
+        # Leave room for gradients carried between accumulation steps. Keep
+        # this reserve fixed so the native search sees one consistent budget.
+        peak = torch.cuda.max_memory_allocated(device) + ema_bytes + gradient_bytes
+        peaks[micro_batch_size] = peak
+        return micro_batch_size == 1 or peak <= budget
+
+    with patch.object(auto_batch, "_probe_step", fits_budget):
+        result = resolve(
+            model_context, model_config, train_config, safety_margin=1.0, devices=devices
+        )
+    auto_batch.logger.info(
+        "[auto-batch] rectangular batch %s: estimated peak %.2f GiB, "
+        "budget %.2f GiB (%.0f%% of %.2f GiB available)",
+        result.safe_micro_batch,
+        peaks[result.safe_micro_batch] / 2**30,
+        budget / 2**30,
+        VRAM_BUDGET_FRACTION * 100,
+        available / 2**30,
+    )
+    return result
+
+
 def probe_rectangular_batch_size(
     model, shape, *, dataset_dir: str, **train_options
 ) -> tuple[int, int]:
@@ -95,17 +141,22 @@ def probe_rectangular_batch_size(
     )
 
     # RF-DETR 1.12.1 only builds square probe tensors. Replace the batch factory
-    # during sizing so RF-DETR still owns the loss, optimizer, and OOM search.
+    # during sizing and budget its training-step peaks using the native search.
     probe_batch = partial(_rectangular_probe_batch, shape=shape)
+    resolve = partial(_resolve_auto_batch_with_vram_budget, auto_batch.resolve_auto_batch_config)
     weights = model.model.model
     original_device = next(weights.parameters()).device
     try:
-        with patch.object(auto_batch, "_make_synthetic_batch", probe_batch):
+        with (
+            patch.object(auto_batch, "_make_synthetic_batch", probe_batch),
+            patch.object(auto_batch, "resolve_auto_batch_config", resolve),
+        ):
             config, _, _ = _prepare_run_config(
                 model,
                 dataset_dir=dataset_dir,
                 batch_size="auto",
                 auto_batch_max_targets_per_image=max(1, max_targets),
+                auto_batch_ema_headroom=1.0,
                 **train_options,
             )
     finally:
