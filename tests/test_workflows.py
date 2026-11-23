@@ -183,6 +183,7 @@ class WorkflowTests(unittest.TestCase):
             return 12
 
         with (
+            tempfile.TemporaryDirectory() as tmp,
             patch("rfdetr.detr._move_model_context_to_device"),
             patch.object(torch.cuda, "is_available", return_value=True),
             patch.object(torch.cuda, "get_device_name", return_value="test GPU"),
@@ -190,14 +191,15 @@ class WorkflowTests(unittest.TestCase):
             patch.object(auto_batch, "build_criterion_from_config", return_value=(Mock(), None)),
             patch.object(auto_batch, "probe_max_micro_batch", side_effect=check_probe) as probe,
         ):
+            instances = [dict(annotation(1), id=i, iscrowd=int(i == 4)) for i in range(1, 5)]
+            write_split(Path(tmp), "train", [(1, "tree")], instances)
             batch, accumulation = probe_rectangular_batch_size(
                 model,
                 shape,
-                dataset_dir=".",
+                dataset_dir=tmp,
                 resolution=360,
                 multi_scale=False,
                 square_resize_div_64=False,
-                auto_batch_max_targets_per_image=3,
             )
         probe.assert_called_once()
         self.assertEqual((batch, accumulation), (8, 2))

@@ -3,6 +3,8 @@ from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
+from .coco import load_coco_annotations
+
 DEFAULT_SHORT_SIDE = 360
 
 
@@ -75,9 +77,22 @@ def _rectangular_probe_batch(
     return samples, targets
 
 
-def probe_rectangular_batch_size(model, shape, **train_options) -> tuple[int, int]:
+def probe_rectangular_batch_size(
+    model, shape, *, dataset_dir: str, **train_options
+) -> tuple[int, int]:
     from rfdetr.detr import _prepare_run_config
     from rfdetr.training import auto_batch
+
+    images, annotations, _ = load_coco_annotations(
+        Path(dataset_dir) / "train" / "_annotations.coco.json"
+    )
+    max_targets = max(
+        (
+            sum(obj.get("iscrowd", 0) == 0 for obj in annotations.get(image_id, ()))
+            for image_id in images
+        ),
+        default=0,
+    )
 
     # RF-DETR 1.12.1 only builds square probe tensors. Replace the batch factory
     # during sizing so RF-DETR still owns the loss, optimizer, and OOM search.
@@ -86,7 +101,13 @@ def probe_rectangular_batch_size(model, shape, **train_options) -> tuple[int, in
     original_device = next(weights.parameters()).device
     try:
         with patch.object(auto_batch, "_make_synthetic_batch", probe_batch):
-            config, _, _ = _prepare_run_config(model, batch_size="auto", **train_options)
+            config, _, _ = _prepare_run_config(
+                model,
+                dataset_dir=dataset_dir,
+                batch_size="auto",
+                auto_batch_max_targets_per_image=max(1, max_targets),
+                **train_options,
+            )
     finally:
         # train() builds a new model. Release the probe's copy before it starts.
         weights.to(original_device)
