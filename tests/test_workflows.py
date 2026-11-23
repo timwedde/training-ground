@@ -152,6 +152,57 @@ class WorkflowTests(unittest.TestCase):
                 rectangular_short_side=360,
             )
 
+    def test_rectangular_rfdetr_uses_native_autobatch_with_rectangular_masks(self):
+        from rfdetr.config import RFDETRSegNanoConfig, SegmentationTrainConfig
+        from rfdetr.training import auto_batch
+
+        from training_ground.rfdetr_rectangular import probe_rectangular_batch_size
+
+        weights = torch.nn.Linear(1, 1)
+        model = SimpleNamespace(
+            model_config=RFDETRSegNanoConfig(),
+            model=SimpleNamespace(device=torch.device("cuda:0"), model=weights),
+            get_train_config=SegmentationTrainConfig,
+        )
+        original_factory = auto_batch._make_synthetic_batch
+        shape = (360, 648)
+
+        def check_probe(**kwargs):
+            samples, targets = auto_batch._make_synthetic_batch(
+                micro_batch_size=2,
+                resolution=kwargs["resolution"],
+                device=torch.device("cpu"),
+                num_classes=kwargs["num_classes"],
+                segmentation_head=kwargs["segmentation_head"],
+                max_targets_per_image=kwargs["max_targets_per_image"],
+            )
+            self.assertEqual(samples.tensors.shape, (2, 3, *shape))
+            self.assertEqual(samples.mask.shape, (2, *shape))
+            self.assertEqual(targets[0]["masks"].shape, (3, *shape))
+            self.assertEqual(targets[0]["size"].tolist(), list(shape))
+            return 12
+
+        with (
+            patch("rfdetr.detr._move_model_context_to_device"),
+            patch.object(torch.cuda, "is_available", return_value=True),
+            patch.object(torch.cuda, "get_device_name", return_value="test GPU"),
+            patch.object(auto_batch, "_resolve_amp_dtype", return_value=None),
+            patch.object(auto_batch, "build_criterion_from_config", return_value=(Mock(), None)),
+            patch.object(auto_batch, "probe_max_micro_batch", side_effect=check_probe) as probe,
+        ):
+            batch, accumulation = probe_rectangular_batch_size(
+                model,
+                shape,
+                dataset_dir=".",
+                resolution=360,
+                multi_scale=False,
+                square_resize_div_64=False,
+                auto_batch_max_targets_per_image=3,
+            )
+        probe.assert_called_once()
+        self.assertEqual((batch, accumulation), (8, 2))
+        self.assertIs(auto_batch._make_synthetic_batch, original_factory)
+
     def test_rectangular_autobatch_probes_dataset_shape_and_refines_after_oom(self):
         from training_ground.rectangular_training import RectangularSegmentationTrainer
 

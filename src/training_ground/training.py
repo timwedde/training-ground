@@ -11,7 +11,7 @@ import yaml
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .predictors import RFDETRPredictorAdapter, load_rfdetr_checkpoint
-from .rfdetr_rectangular import rectangular_input
+from .rfdetr_rectangular import probe_rectangular_batch_size, rectangular_input
 from .tiling import pad_to_tile
 from .training_backends import (
     BOX_TASK,
@@ -233,15 +233,9 @@ def train_rfdetr(
         typer.echo(
             f"RF-DETR rectangular input: {width}×{height} (short side {resolution})"
         )
-        # RF-DETR's automatic batch probe allocates square inputs.
-        if batch_size is None:
-            typer.echo(
-                "Using batch size 1 for rectangular RF-DETR. Override with --batch-size."
-            )
         train_kwargs.update(
             resolution=resolution,
             square_resize_div_64=False,
-            batch_size=batch_size if batch_size is not None else 1,
         )
     else:
         if batch_size is not None:
@@ -251,7 +245,7 @@ def train_rfdetr(
         if model_size == "nano" and task == SEGMENTATION_TASK:
             train_kwargs["resolution"] = RFDETR_SEG_NANO_RESOLUTION
 
-    model.train(
+    train_options = dict(
         dataset_dir=str(dataset_path),
         epochs=100,
         early_stopping=True,
@@ -272,6 +266,26 @@ def train_rfdetr(
         output_dir=str(runs_dir),
         **train_kwargs,
     )
+    if input_shape is not None:
+        if batch_size is not None:
+            train_options["batch_size"] = batch_size
+        elif model.model.device.type == "cuda":
+            # RF-DETR's validation can need more memory than the training probe.
+            typer.echo(f"RF-DETR AutoBatch: profiling {width}×{height} training inputs.")
+            micro_batch, accumulation = probe_rectangular_batch_size(
+                model, input_shape, **train_options
+            )
+            train_options.update(
+                batch_size=micro_batch, grad_accum_steps=accumulation, eval_batch_size=1
+            )
+            typer.echo(
+                f"RF-DETR AutoBatch: batch size {micro_batch}, gradient accumulation "
+                f"{accumulation}, validation batch size 1."
+            )
+        else:
+            train_options["batch_size"] = 1
+            typer.echo("Using batch size 1 for rectangular RF-DETR without CUDA.")
+    model.train(**train_options)
 
     del model
     checkpoint_ema = runs_dir / "checkpoint_best_ema.pth"
