@@ -75,6 +75,7 @@ class TrainingArtifacts:
     eval_dir: Path
     onnx_path: Path
     mask_downsample_ratio: int | None = None
+    input_shape: tuple[int, int] | None = None
 
 
 def normalize_backend(value: str) -> Backend:

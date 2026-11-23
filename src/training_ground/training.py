@@ -11,6 +11,7 @@ import yaml
 from .evaluation import run_evaluation
 from .metrics_plotting import plot_training_metrics
 from .predictors import RFDETRPredictorAdapter, load_rfdetr_checkpoint
+from .rfdetr_rectangular import rectangular_input
 from .tiling import pad_to_tile
 from .training_backends import (
     BOX_TASK,
@@ -178,6 +179,7 @@ def train_rfdetr(
     limit_queries: bool = False,
     *,
     batch_size: int | None = None,
+    rectangular_short_side: int | None = None,
 ) -> TrainingArtifacts:
     import onnx
     import rfdetr.detr as rfdetr_detr
@@ -218,12 +220,36 @@ def train_rfdetr(
             f"linear_resolution=1/{mask_downsample_ratio} of training input"
         )
     train_kwargs = {}
-    if batch_size is not None:
-        train_kwargs["batch_size"] = batch_size
-    elif model.model.device.type == "cuda":
-        train_kwargs["batch_size"] = "auto"
-    if model_size == "nano" and task == SEGMENTATION_TASK:
-        train_kwargs["resolution"] = RFDETR_SEG_NANO_RESOLUTION
+    input_shape = None
+    if rectangular_short_side is not None:
+        block_size = model.model_config.patch_size * model.model_config.num_windows
+        try:
+            resolution, input_shape = rectangular_input(
+                dataset_path, rectangular_short_side, block_size
+            )
+        except (ValueError, OSError) as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        height, width = input_shape
+        typer.echo(
+            f"RF-DETR rectangular input: {width}×{height} (short side {resolution})"
+        )
+        # RF-DETR's automatic batch probe allocates square inputs.
+        if batch_size is None:
+            typer.echo(
+                "Using batch size 1 for rectangular RF-DETR. Override with --batch-size."
+            )
+        train_kwargs.update(
+            resolution=resolution,
+            square_resize_div_64=False,
+            batch_size=batch_size if batch_size is not None else 1,
+        )
+    else:
+        if batch_size is not None:
+            train_kwargs["batch_size"] = batch_size
+        elif model.model.device.type == "cuda":
+            train_kwargs["batch_size"] = "auto"
+        if model_size == "nano" and task == SEGMENTATION_TASK:
+            train_kwargs["resolution"] = RFDETR_SEG_NANO_RESOLUTION
 
     model.train(
         dataset_dir=str(dataset_path),
@@ -255,7 +281,10 @@ def train_rfdetr(
     )
     typer.echo("Exporting model to ONNX...")
     onnx_path = best_model.export(
-        output_dir=str(runs_dir), output_name="inference_model", verbose=False
+        output_dir=str(runs_dir),
+        output_name="inference_model",
+        verbose=False,
+        shape=input_shape,
     )
     onnx_model = onnx.load(onnx_path)
     onnx_model_simp, check = simplify(onnx_model)
@@ -275,7 +304,7 @@ def train_rfdetr(
         split="test",
         threshold=None,
         iou_threshold=0.5,
-        model=RFDETRPredictorAdapter(best_model),
+        model=RFDETRPredictorAdapter(best_model, input_shape=input_shape),
         model_size=model_size,
         backend=RFDETR_BACKEND,
         task=task,
@@ -293,6 +322,7 @@ def train_rfdetr(
         metrics_path=metrics_path,
         eval_dir=eval_dir,
         onnx_path=onnx_path,
+        input_shape=input_shape,
         mask_downsample_ratio=(
             mask_downsample_ratio if task == SEGMENTATION_TASK else None
         ),

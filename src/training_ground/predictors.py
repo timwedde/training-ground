@@ -5,6 +5,7 @@ from typing import Any, Protocol
 import numpy as np
 import typer
 
+from .rfdetr_rectangular import predict_rectangular
 from .tiling import (
     DEFAULT_MERGE_IOU,
     TILE_BATCH_SIZE,
@@ -205,10 +206,12 @@ class YOLO26PredictorAdapter:
 
 
 class RFDETRPredictorAdapter:
-    def __init__(self, model):
+    def __init__(self, model, *, input_shape: tuple[int, int] | None = None):
         from .camera_inference import matches_camera_model
 
-        self.camera_profile = matches_camera_model(model)
+        self.input_shape = input_shape
+        self.camera_profile = input_shape is None and matches_camera_model(model)
+        self.means = model.means if input_shape is not None else None
         self.model_config = model.model_config
         self.variant = type(model).__name__
         self.num_class_slots = int(model.model.model.class_embed.out_features)
@@ -217,7 +220,10 @@ class RFDETRPredictorAdapter:
                 "Camera STM settings: input=432, masks=216, top-k=20, "
                 "pole=0.90, stick=0.55, tree=0.60; centered letterbox."
             )
-        self._predictor = model.inference(compile=False)
+        # RF-DETR inference snapshots are fixed to a square resolution, even in eager mode.
+        self._predictor = (
+            model if input_shape is not None else model.inference(compile=False)
+        )
         if self.camera_profile:
             self.class_id_to_name = {
                 slot: model.class_names[slot] for slot in (1, 2, 3)
@@ -229,10 +235,11 @@ class RFDETRPredictorAdapter:
     def model_settings(self) -> dict:
         config = self.model_config
         ratio = config.mask_downsample_ratio if config.segmentation_head else None
+        shape = self.input_shape or (config.resolution, config.resolution)
         return {
             "variant": self.variant,
-            "image_size": [config.resolution, config.resolution],
-            "mask_size": [config.resolution // ratio] * 2 if ratio else None,
+            "image_size": list(shape),
+            "mask_size": [side // ratio for side in shape] if ratio else None,
             "mask_downsample_ratio": ratio,
             "num_queries": config.num_queries,
             "num_select": config.num_select,
@@ -248,10 +255,20 @@ class RFDETRPredictorAdapter:
         from rfdetr import ClassThresholds
 
         confidence = DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold
+        # A uniform class threshold excludes RF-DETR's unmapped no-object slot.
+        thresholds = ClassThresholds({}, default=confidence)
+        if self.input_shape is not None:
+            return predict_rectangular(
+                self._predictor,
+                image_path,
+                thresholds,
+                self.input_shape,
+                self.model_config.resolution,
+                self.means,
+            )
         return self._predictor.predict(
             image_path,
-            # A uniform class threshold excludes RF-DETR's unmapped no-object slot.
-            threshold=ClassThresholds({}, default=confidence),
+            threshold=thresholds,
             include_source_image=False,
         )
 
@@ -324,8 +341,13 @@ def create_model(
     if backend == YOLO26_BACKEND:
         return YOLO26PredictorAdapter(checkpoint_path, tiled=tiled)
     if backend == RFDETR_BACKEND:
+        from .upload import read_upload_metadata
+
+        metadata = read_upload_metadata(checkpoint_path.resolve().parent)
+        shape = (metadata or {}).get("input_shape")
         return RFDETRPredictorAdapter(
-            load_rfdetr_checkpoint(checkpoint_path, model_size=model_size, task=task)
+            load_rfdetr_checkpoint(checkpoint_path, model_size=model_size, task=task),
+            input_shape=tuple(shape) if shape is not None else None,
         )
     raise ValueError(f"Unsupported backend: {backend}")
 

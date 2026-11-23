@@ -83,6 +83,8 @@ def build_training_metadata(
     }
     if artifacts.mask_downsample_ratio is not None:
         metadata["mask_downsample_ratio"] = artifacts.mask_downsample_ratio
+    if artifacts.input_shape is not None:
+        metadata["input_shape"] = list(artifacts.input_shape)
     return metadata
 
 

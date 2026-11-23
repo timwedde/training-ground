@@ -7,6 +7,7 @@ import questionary
 import typer
 from questionary import Choice
 
+from .rfdetr_rectangular import DEFAULT_SHORT_SIDE
 from .training import train_rfdetr, train_yolo26
 from .training_backends import (
     BOX_TASK,
@@ -100,6 +101,7 @@ def run_wizard(
     limit_queries = False
     tiled = False
     rectangular_batches = rect
+    rectangular_short_side = None
 
     step = "task" if local_dataset else "project"
     while True:
@@ -211,6 +213,37 @@ def run_wizard(
                 else:
                     step = "tiling"
                 continue
+            step = "rfdetr_input"
+            continue
+
+        if step == "rfdetr_input":
+            selected = _select(
+                "Select RF-DETR input shape",
+                choices=[
+                    Choice(title="Square (model default)", value=False),
+                    Choice(
+                        title="Rectangular (preserve source aspect ratio)", value=True
+                    ),
+                ],
+                default=rectangular_short_side is not None,
+            )
+            if selected == BACK_CHOICE:
+                step = "model_size"
+                continue
+            if selected:
+                size = questionary.text(
+                    "Short side in pixels (rounded up to the model's input multiple)",
+                    default=str(rectangular_short_side or DEFAULT_SHORT_SIDE),
+                    validate=lambda value: (
+                        (value.isdecimal() and int(value) > 0)
+                        or "Enter a positive whole number."
+                    ),
+                ).ask()
+                if size is None:
+                    raise typer.Abort()
+                rectangular_short_side = int(size)
+            else:
+                rectangular_short_side = None
             step = "mask_ratio" if task == SEGMENTATION_TASK else "queries"
             continue
 
@@ -289,7 +322,7 @@ def run_wizard(
                 instruction="(Lower ratios improve mask resolution and use more VRAM)",
             )
             if selected == BACK_CHOICE:
-                step = "model_size"
+                step = "rfdetr_input"
                 continue
             mask_downsample_ratio = int(selected)
             step = "queries"
@@ -305,7 +338,7 @@ def run_wizard(
                 default=limit_queries,
             )
             if selected == BACK_CHOICE:
-                step = "mask_ratio" if task == SEGMENTATION_TASK else "model_size"
+                step = "mask_ratio" if task == SEGMENTATION_TASK else "rfdetr_input"
                 continue
             limit_queries = selected is True
             break
@@ -337,6 +370,7 @@ def run_wizard(
             model_size=model_size,
             mask_downsample_ratio=mask_downsample_ratio,
             limit_queries=limit_queries,
+            rectangular_short_side=rectangular_short_side,
         )
     else:
         artifacts = train_yolo26(

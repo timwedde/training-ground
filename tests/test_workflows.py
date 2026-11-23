@@ -63,6 +63,95 @@ def annotation(category_id):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_rfdetr_rectangular_profile_preserves_source_geometry(self):
+        import supervision as sv
+
+        from training_ground.rfdetr_rectangular import rectangular_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for split in ("train", "valid", "test"):
+                image = write_split(root, split, [(1, "tree")], [], size=(848, 480))
+            short_side, shape = rectangular_input(root, 360, 24)
+            self.assertEqual((short_side, shape), (360, (360, 648)))
+            checkpoint = root / "checkpoint.pth"
+            (root / "metadata.json").write_text(
+                json.dumps({"input_shape": list(shape)})
+            )
+            predictor = Mock()
+            predictor._prediction_context.return_value.class_id_to_name = {0: "tree"}
+            mask = np.zeros((1, 360, 648), dtype=bool)
+            mask[0, :, 600:] = True
+            predictor.predict.return_value = sv.Detections(
+                xyxy=np.array([[600, 0, 646, 360]], dtype=np.float32),
+                class_id=np.array([0]),
+                confidence=np.array([0.8]),
+                mask=mask,
+            )
+            model = SimpleNamespace(
+                means=(0.485, 0.456, 0.406),
+                model_config=SimpleNamespace(
+                    resolution=360,
+                    mask_downsample_ratio=2,
+                    segmentation_head=True,
+                    num_queries=50,
+                    num_select=20,
+                ),
+                model=SimpleNamespace(
+                    model=SimpleNamespace(class_embed=SimpleNamespace(out_features=4))
+                ),
+                inference=Mock(),
+                predict=predictor.predict,
+                _prediction_context=predictor._prediction_context,
+            )
+            from training_ground.predictors import create_model
+
+            with patch(
+                "training_ground.predictors.load_rfdetr_checkpoint", return_value=model
+            ):
+                adapter = create_model(checkpoint, "rfdetr")
+            model.inference.assert_not_called()
+            self.assertEqual(adapter.model_settings()["mask_size"], [180, 324])
+            detections = adapter.predict(str(image), 0.6)
+            canvas = predictor.predict.call_args.args[0]
+            self.assertEqual(tuple(canvas.shape), (3, 360, 648))
+            self.assertTrue(torch.equal(canvas[:, 0, 636], torch.tensor(model.means)))
+            self.assertEqual(predictor.predict.call_args.kwargs["shape"], shape)
+            np.testing.assert_allclose(detections.xyxy[0], [800, 0, 848, 480])
+            self.assertFalse(detections.mask[0, :, :800].any())
+            self.assertTrue(detections.mask[0, :, 800:].all())
+
+    def test_rfdetr_wizard_passes_rectangular_short_side_to_trainer(self):
+        from training_ground.wizard import run_wizard
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset = Path(tmp)
+            wizard = "training_ground.wizard"
+            with (
+                patch.dict(os.environ),
+                patch(
+                    f"{wizard}._select",
+                    side_effect=["segmentation", "rfdetr", "medium", True, 2, True],
+                ),
+                patch(f"{wizard}.questionary.text") as prompt,
+                patch(f"{wizard}.train_rfdetr") as train,
+                patch(f"{wizard}.build_training_metadata"),
+                patch(f"{wizard}.write_upload_metadata"),
+                patch(f"{wizard}.artifact_files_for_training"),
+                patch(f"{wizard}.upload_artifact_bundle", new_callable=AsyncMock),
+            ):
+                prompt.return_value.ask.return_value = "360"
+                run_wizard(dataset_path=dataset, batch_size=4)
+            train.assert_called_once_with(
+                dataset_path=dataset.resolve(),
+                batch_size=4,
+                task="segmentation",
+                model_size="medium",
+                mask_downsample_ratio=2,
+                limit_queries=True,
+                rectangular_short_side=360,
+            )
+
     def test_rectangular_autobatch_probes_dataset_shape_and_refines_after_oom(self):
         from training_ground.rectangular_training import RectangularSegmentationTrainer
 
