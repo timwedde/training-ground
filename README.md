@@ -10,7 +10,8 @@ Paste this command to install the tool and Python 3.14. It installs `uv` if need
 sudo apt update && sudo apt-get install -y libxcb-cursor-dev libgl1-mesa-dev ca-certificates curl git \
 && export PATH="$HOME/.local/bin:$PATH" \
 && (command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh) \
-&& uv tool install --python 3.14 --from git+https://github.com/timwedde/training-ground.git training-ground
+&& uv tool install --python 3.14 --with 'torch-hungarian==0.1.0rc0' \
+   --from git+https://github.com/timwedde/training-ground.git training-ground
 ```
 
 Then run `training-ground wizard`.
