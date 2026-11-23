@@ -7,7 +7,7 @@ Train YOLO26 or RF-DETR models for object detection and instance segmentation us
 Paste this command to install the tool and Python 3.14. It installs `uv` if needed.
 
 ```sh
-sudo apt update && sudo apt-get install -y libxcb-cursor-dev libgl1-mesa-dev ca-certificates curl git \
+sudo apt update && sudo apt-get install -y libxcb-cursor-dev libgl1-mesa-dev ca-certificates curl git nvtop tmux \
 && export PATH="$HOME/.local/bin:$PATH" \
 && (command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh) \
 && uv tool install --python 3.14 --with 'torch-hungarian==0.1.0rc0' \
@@ -15,6 +15,23 @@ sudo apt update && sudo apt-get install -y libxcb-cursor-dev libgl1-mesa-dev ca-
 ```
 
 Then run `training-ground wizard`.
+
+## Run training over SSH
+
+Start a named tmux session and launch the wizard inside it.
+
+```sh
+tmux new-session -s training
+training-ground wizard
+```
+
+Press **Ctrl+B**, release, then press **d** to detach. Training keeps running after you disconnect from SSH.
+
+After reconnecting over SSH, reattach to the session.
+
+```sh
+tmux attach-session -t training
+```
 
 ## Run from a checkout
 
