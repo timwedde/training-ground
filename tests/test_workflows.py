@@ -167,20 +167,25 @@ class WorkflowTests(unittest.TestCase):
         original_factory = auto_batch._make_synthetic_batch
         original_resolver = auto_batch.resolve_auto_batch_config
         shape = (360, 648)
-        candidates = []
+        measurements = []
 
         def check_probe(model, criterion, batch, resolution, device, num_classes, amp, **kwargs):
-            candidates.append(batch)
+            samples, targets = auto_batch._make_synthetic_batch(
+                batch, resolution, torch.device("cpu"), num_classes,
+                kwargs["segmentation_head"], kwargs["max_targets_per_image"],
+            )
+            counts = tuple(target["masks"].shape[0] for target in targets)
+            measurements.append((batch, counts))
             if batch == 2:
-                samples, targets = auto_batch._make_synthetic_batch(
-                    batch, resolution, torch.device("cpu"), num_classes,
-                    kwargs["segmentation_head"], kwargs["max_targets_per_image"],
-                )
                 self.assertEqual(samples.tensors.shape, (2, 3, *shape))
                 self.assertEqual(samples.mask.shape, (2, *shape))
-                self.assertEqual(targets[0]["masks"].shape, (3, *shape))
+                self.assertEqual(targets[0]["masks"].shape[1:], shape)
                 self.assertEqual(targets[0]["size"].tolist(), list(shape))
             return batch < 16
+
+        def peak_memory(_):
+            batch, counts = measurements[-1]
+            return batch * 20 + sum(counts) * 10
 
         with (
             tempfile.TemporaryDirectory() as tmp,
@@ -190,14 +195,23 @@ class WorkflowTests(unittest.TestCase):
             patch.object(torch.cuda, "mem_get_info", return_value=(900, 1600)),
             patch.object(torch.cuda, "memory_reserved", return_value=124),
             patch.object(torch.cuda, "reset_peak_memory_stats"),
-            patch.object(torch.cuda, "max_memory_allocated", side_effect=lambda _: candidates[-1] * 60),
+            patch.object(torch.cuda, "max_memory_allocated", side_effect=peak_memory),
             patch.object(auto_batch, "_resolve_amp_dtype", return_value=None),
             patch.object(auto_batch, "build_criterion_from_config", return_value=(Mock(), None)),
             patch.object(auto_batch, "_build_shadow_optimizer", return_value=(Mock(), [])),
             patch.object(auto_batch, "_probe_step", side_effect=check_probe),
         ):
-            instances = [dict(annotation(1), id=i, iscrowd=int(i == 4)) for i in range(1, 5)]
-            write_split(Path(tmp), "train", [(1, "tree")], instances)
+            write_split(Path(tmp), "train", [(1, "tree")], [])
+            annotations_path = Path(tmp) / "train" / "_annotations.coco.json"
+            dataset = json.loads(annotations_path.read_text())
+            source_image = dataset["images"][0]
+            dataset["images"] = [dict(source_image, id=i) for i in range(1, 21)]
+            dataset["annotations"] = [
+                dict(annotation(1), id=i * 10 + j, image_id=i, iscrowd=int(j == 0))
+                for i in range(1, 21)
+                for j in range(2 if i <= 10 else 8)
+            ]
+            annotations_path.write_text(json.dumps(dataset))
             batch, accumulation = probe_rectangular_batch_size(
                 model,
                 shape,
@@ -206,9 +220,10 @@ class WorkflowTests(unittest.TestCase):
                 multi_scale=False,
                 square_resize_div_64=False,
             )
-        self.assertIn(15, candidates)  # Fits physically, but exceeds the budget.
-        self.assertIn(16, candidates)  # Simulated CUDA OOM.
-        self.assertEqual((batch, accumulation), (14, 2))
+        self.assertIn((12, (1,) * 6 + (7,) * 6), measurements)
+        self.assertIn((12, (1,) * 2 + (7,) * 10), measurements)
+        self.assertIn((16, (1,) * 8 + (7,) * 8), measurements)
+        self.assertEqual((batch, accumulation), (10, 2))
         self.assertIs(auto_batch._make_synthetic_batch, original_factory)
         self.assertIs(auto_batch.resolve_auto_batch_config, original_resolver)
 

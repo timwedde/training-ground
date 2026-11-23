@@ -7,6 +7,7 @@ from .coco import load_coco_annotations
 
 DEFAULT_SHORT_SIDE = 360
 VRAM_BUDGET_FRACTION = 0.85
+DENSE_VRAM_BUDGET_FRACTION = 0.90
 
 
 def rectangular_input(
@@ -50,6 +51,7 @@ def _rectangular_probe_batch(
     num_channels=3,
     *,
     shape,
+    target_counts,
 ):
     import torch
     from rfdetr.utilities.tensors import NestedTensor
@@ -59,10 +61,9 @@ def _rectangular_probe_batch(
         torch.randn(micro_batch_size, num_channels, height, width, device=device),
         torch.zeros(micro_batch_size, height, width, dtype=torch.bool, device=device),
     )
-    count = max(1, max_targets_per_image)
     size = torch.tensor([height, width], device=device)
     targets = []
-    for index in range(micro_batch_size):
+    for index, count in enumerate(target_counts):
         target = {
             "boxes": torch.tensor([[0.5, 0.5, 0.2, 0.2]], device=device).expand(count, 4),
             "labels": torch.full((count,), int(num_classes > 1), device=device),
@@ -78,7 +79,9 @@ def _rectangular_probe_batch(
     return samples, targets
 
 
-def _resolve_auto_batch_with_vram_budget(resolve, model_context, model_config, train_config, devices):
+def _resolve_auto_batch_with_vram_budget(
+    resolve, shape, object_counts, model_context, model_config, train_config, devices
+):
     import torch
     from rfdetr.training import auto_batch
 
@@ -87,6 +90,7 @@ def _resolve_auto_batch_with_vram_budget(resolve, model_context, model_config, t
     free, _ = torch.cuda.mem_get_info(device)
     available = free + torch.cuda.memory_reserved(device)
     budget = int(available * VRAM_BUDGET_FRACTION)
+    dense_budget = int(available * DENSE_VRAM_BUDGET_FRACTION)
     gradient_bytes = sum(p.nbytes for p in model.parameters() if p.requires_grad)
     # The probe's shadow optimizer already holds one copy of every trainable
     # parameter. Count that copy toward EMA and reserve the rest separately.
@@ -98,26 +102,48 @@ def _resolve_auto_batch_with_vram_budget(resolve, model_context, model_config, t
     probe_step = auto_batch._probe_step
 
     def fits_budget(model, criterion, micro_batch_size, *args, **kwargs):
-        torch.cuda.reset_peak_memory_stats(device)
-        if not probe_step(model, criterion, micro_batch_size, *args, **kwargs):
+        def measure(counts):
+            # Exercise the mask loss even when all sampled images are empty.
+            if not any(counts):
+                counts = [*counts[:-1], 1]
+            factory = partial(_rectangular_probe_batch, shape=shape, target_counts=counts)
+            torch.cuda.reset_peak_memory_stats(device)
+            with patch.object(auto_batch, "_make_synthetic_batch", factory):
+                if not probe_step(model, criterion, micro_batch_size, *args, **kwargs):
+                    return None
+            return torch.cuda.max_memory_allocated(device) + ema_bytes + gradient_bytes
+
+        # Sample evenly spaced quantiles to make the representative mix repeatable.
+        typical = [
+            object_counts[(2 * i + 1) * len(object_counts) // (2 * micro_batch_size)]
+            for i in range(micro_batch_size)
+        ]
+        peak = measure(typical)
+        if peak is None or (micro_batch_size > 1 and peak > budget):
             return False
-        # Leave room for gradients carried between accumulation steps. Keep
-        # this reserve fixed so the native search sees one consistent budget.
-        peak = torch.cuda.max_memory_allocated(device) + ema_bytes + gradient_bytes
-        peaks[micro_batch_size] = peak
-        return micro_batch_size == 1 or peak <= budget
+        dense = object_counts[-micro_batch_size:]
+        dense_peak = peak if dense == typical else measure(dense)
+        if dense_peak is None or (micro_batch_size > 1 and dense_peak > dense_budget):
+            return False
+        peaks[micro_batch_size] = (peak, dense_peak)
+        return True
 
     with patch.object(auto_batch, "_probe_step", fits_budget):
         result = resolve(
-            model_context, model_config, train_config, safety_margin=1.0, devices=devices
+            model_context, model_config, train_config,
+            safety_margin=1.0, max_micro_batch=min(128, len(object_counts)), devices=devices,
         )
+    peak, dense_peak = peaks[result.safe_micro_batch]
     auto_batch.logger.info(
-        "[auto-batch] rectangular batch %s: estimated peak %.2f GiB, "
-        "budget %.2f GiB (%.0f%% of %.2f GiB available)",
+        "[auto-batch] rectangular batch %s: representative peak %.2f / %.2f GiB (%.0f%% budget), "
+        "dense peak %.2f / %.2f GiB (%.0f%% budget), %.2f GiB available",
         result.safe_micro_batch,
-        peaks[result.safe_micro_batch] / 2**30,
+        peak / 2**30,
         budget / 2**30,
         VRAM_BUDGET_FRACTION * 100,
+        dense_peak / 2**30,
+        dense_budget / 2**30,
+        DENSE_VRAM_BUDGET_FRACTION * 100,
         available / 2**30,
     )
     return result
@@ -132,30 +158,25 @@ def probe_rectangular_batch_size(
     images, annotations, _ = load_coco_annotations(
         Path(dataset_dir) / "train" / "_annotations.coco.json"
     )
-    max_targets = max(
-        (
-            sum(obj.get("iscrowd", 0) == 0 for obj in annotations.get(image_id, ()))
-            for image_id in images
-        ),
-        default=0,
+    object_counts = sorted(
+        sum(obj.get("iscrowd", 0) == 0 for obj in annotations.get(image_id, ()))
+        for image_id in images
     )
 
     # RF-DETR 1.12.1 only builds square probe tensors. Replace the batch factory
     # during sizing and budget its training-step peaks using the native search.
-    probe_batch = partial(_rectangular_probe_batch, shape=shape)
-    resolve = partial(_resolve_auto_batch_with_vram_budget, auto_batch.resolve_auto_batch_config)
+    resolve = partial(
+        _resolve_auto_batch_with_vram_budget, auto_batch.resolve_auto_batch_config, shape, object_counts
+    )
     weights = model.model.model
     original_device = next(weights.parameters()).device
     try:
-        with (
-            patch.object(auto_batch, "_make_synthetic_batch", probe_batch),
-            patch.object(auto_batch, "resolve_auto_batch_config", resolve),
-        ):
+        with patch.object(auto_batch, "resolve_auto_batch_config", resolve):
             config, _, _ = _prepare_run_config(
                 model,
                 dataset_dir=dataset_dir,
                 batch_size="auto",
-                auto_batch_max_targets_per_image=max(1, max_targets),
+                auto_batch_max_targets_per_image=max(1, object_counts[-1]),
                 auto_batch_ema_headroom=1.0,
                 **train_options,
             )
