@@ -6,8 +6,7 @@ from unittest.mock import patch
 from .coco import load_coco_annotations
 
 DEFAULT_SHORT_SIDE = 360
-VRAM_BUDGET_FRACTION = 0.85
-DENSE_VRAM_BUDGET_FRACTION = 0.90
+VRAM_BUDGET_FRACTION = 0.90
 
 
 def rectangular_input(
@@ -90,7 +89,6 @@ def _resolve_auto_batch_with_vram_budget(
     free, _ = torch.cuda.mem_get_info(device)
     available = free + torch.cuda.memory_reserved(device)
     budget = int(available * VRAM_BUDGET_FRACTION)
-    dense_budget = int(available * DENSE_VRAM_BUDGET_FRACTION)
     gradient_bytes = sum(p.nbytes for p in model.parameters() if p.requires_grad)
     # The probe's shadow optimizer already holds one copy of every trainable
     # parameter. Count that copy toward EMA and reserve the rest separately.
@@ -123,7 +121,7 @@ def _resolve_auto_batch_with_vram_budget(
             return False
         dense = object_counts[-micro_batch_size:]
         dense_peak = peak if dense == typical else measure(dense)
-        if dense_peak is None or (micro_batch_size > 1 and dense_peak > dense_budget):
+        if dense_peak is None or (micro_batch_size > 1 and dense_peak > budget):
             return False
         peaks[micro_batch_size] = (peak, dense_peak)
         return True
@@ -135,15 +133,13 @@ def _resolve_auto_batch_with_vram_budget(
         )
     peak, dense_peak = peaks[result.safe_micro_batch]
     auto_batch.logger.info(
-        "[auto-batch] rectangular batch %s: representative peak %.2f / %.2f GiB (%.0f%% budget), "
-        "dense peak %.2f / %.2f GiB (%.0f%% budget), %.2f GiB available",
+        "[auto-batch] rectangular batch %s: representative peak %.2f GiB, dense peak %.2f GiB, "
+        "budget %.2f GiB (%.0f%% of %.2f GiB available)",
         result.safe_micro_batch,
         peak / 2**30,
+        dense_peak / 2**30,
         budget / 2**30,
         VRAM_BUDGET_FRACTION * 100,
-        dense_peak / 2**30,
-        dense_budget / 2**30,
-        DENSE_VRAM_BUDGET_FRACTION * 100,
         available / 2**30,
     )
     return result
